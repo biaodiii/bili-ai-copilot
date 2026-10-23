@@ -1,0 +1,28 @@
+{
+  "name": "bili-ai-copilot",
+  "productName": "直播AI搭档",
+  "version": "0.1.0",
+  "description": "B站直播 AI 搭档：读取弹幕 + DeepSeek 对话 + 置顶悬浮窗吉祥物",
+  "main": "src/main/main.js",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "smoke": "electron . --smoke-test",
+    "check": "node scripts/check-all.js",
+    "test": "node scripts/check-all.js",
+    "build:release": "node scripts/build-release.js",
+    "check:danmaku": "node scripts/selfcheck.js",
+    "capture": "node scripts/capture.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

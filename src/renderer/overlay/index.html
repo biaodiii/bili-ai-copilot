@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' data:; font-src 'self';"
+    />
+    <title>直播AI搭档 · 悬浮窗</title>
+    <link rel="stylesheet" href="overlay.css" />
+    <script src="../../shared/error-reporter.js"></script>
+  </head>
+  <body>
+    <!-- 悬浮窗就是一个「卡片」：窗口本身只有这么大，拖动由系统处理 -->
+    <div id="copilot" class="copilot">
+      <!-- 顶部一行：按住这里拖动整个悬浮窗 -->
+      <div id="header" class="overlay-header">
+        <span id="headerTitle" class="header-title">搭档</span>
+        <span class="header-spacer"></span>
+        <span id="headerStatus" class="header-status"></span>
+        <!-- 置顶 / 锁定（2026-10-19 加的）：都是开关键，亮着的状态由 .active 标出来 -->
+        <button id="pinBtn" class="tool-btn" title="置顶（永远显示在最前面）">📌</button>
+        <button id="lockBtn" class="tool-btn" title="锁定窗口位置（防止拖动）">🔒</button>
+        <button id="gearBtn" class="tool-btn" title="快捷设置（Alt+S）">⚙</button>
+        <button id="closeBtn" class="tool-btn danger" title="关闭悬浮窗">✕</button>
+      </div>
+
+      <div class="overlay-body">
+        <div id="replyBox" class="reply-box"></div>
+        <div id="mascot" class="mascot">
+          <div id="mascotGlow" class="mascot-glow"></div>
+          <img id="mascotImg" class="mascot-img" alt="" draggable="false" />
+          <div id="mascotEmoji" class="mascot-emoji">🦊</div>
+          <!-- 吉祥物下面原来有一行名字牌（显示搭档的名字）：2026-10-19 主播要求去掉，功能整个删了 -->
+          <div id="thinkingDots" class="thinking-dots"><i></i><i></i><i></i></div>
+        </div>
+
+        <!-- 对话区：上面是弹幕/AI 回复记录，下面是输入框 -->
+        <div id="chatPanel" class="chat-panel">
+          <div id="chatLog" class="chat-log"></div>
+          <button id="chatJump" class="chat-jump" type="button" title="跳到最新">↓ 有新消息</button>
+          <div class="chat-input-row">
+            <textarea
+              id="chatInput"
+              rows="1"
+              placeholder="在这里打字和搭档说话…"
+              spellcheck="false"
+            ></textarea>
+            <button id="chatSend" class="chat-send" title="发送（Enter）">发送</button>
+          </div>
+          <div class="chat-hint">
+            <span id="chatStatus">观众弹幕会自动出现在上面</span>
+            <button id="chatClear" class="chat-clear" title="清空对话记录">清空</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 八方向缩放抓手（2026-10-19 加的）：四条边 + 四个角都能拖。
+           抓手本身是透明的（只改鼠标指针形状），因为这是直播悬浮窗，边上多两条线很难看。
+           ⚠️ 锁定窗口位置（🔒）时整组禁用 —— 见 overlay.css 的 `.copilot.locked .resize-handle`。 -->
+      <div class="resize-handle" data-dir="n"></div>
+      <div class="resize-handle" data-dir="s"></div>
+      <div class="resize-handle" data-dir="w"></div>
+      <div class="resize-handle" data-dir="e"></div>
+      <div class="resize-handle" data-dir="nw"></div>
+      <div class="resize-handle" data-dir="ne"></div>
+      <div class="resize-handle" data-dir="sw"></div>
+      <div class="resize-handle" data-dir="se"></div>
+    </div>
+
+    <div id="drawer" class="drawer">
+      <div class="drawer-head">
+        <strong>悬浮窗快捷设置</strong>
+        <button id="drawerClose" class="icon-btn" title="收起">✕</button>
+      </div>
+      <div class="drawer-body">
+        <label class="row">
+          <span>横向位置</span>
+          <input id="posX" type="range" min="0" max="100" step="0.5" />
+          <output id="posXOut"></output>
+        </label>
+        <label class="row">
+          <span>纵向位置</span>
+          <input id="posY" type="range" min="0" max="100" step="0.5" />
+          <output id="posYOut"></output>
+        </label>
+        <label class="row">
+          <span>吉祥物大小</span>
+          <input id="mascotWidth" type="range" min="80" max="560" step="4" />
+          <output id="mascotWidthOut"></output>
+        </label>
+        <label class="row">
+          <span>回复字号</span>
+          <input id="fontScale" type="range" min="0.7" max="1.8" step="0.05" />
+          <output id="fontScaleOut"></output>
+        </label>
+        <label class="row">
+          <span>整体不透明度</span>
+          <input id="opacity" type="range" min="0.3" max="1" step="0.05" />
+          <output id="opacityOut"></output>
+        </label>
+        <label class="row">
+          <span>回复停留秒数</span>
+          <input id="replySeconds" type="range" min="5" max="120" step="1" />
+          <output id="replySecondsOut"></output>
+        </label>
+        <!-- 窗口高度模式（2026-10-19）：从四条边拖过高度之后会变成「固定」，这里能切回跟内容走 -->
+        <div class="row">
+          <span>窗口高度</span>
+          <span class="hint" id="heightModeHint">跟随内容</span>
+          <button id="resetHeightMode" type="button" hidden>恢复跟随内容</button>
+        </div>
+        <label class="row check">
+          <input id="replyPersist" type="checkbox" />
+          <span>回复气泡不自动消失（一直留到下一条回复）</span>
+        </label>
+        <label class="row check">
+          <input id="showViewerMessage" type="checkbox" />
+          <span>回复里同时显示观众的原话</span>
+        </label>
+        <div class="row speech-row">
+          <label class="check-inline">
+            <input id="speechEnabled" type="checkbox" />
+            <span>语音朗读回复</span>
+          </label>
+          <button id="muteBtn" class="icon-btn" title="朗读时静音 / 恢复">🔊 开启</button>
+        </div>
+        <div class="row check">
+          <input id="chatEnabled" type="checkbox" />
+          <span>在悬浮窗里显示对话区（可以直接打字聊天）</span>
+        </div>
+        <div class="row check">
+          <input id="chatShowDanmaku" type="checkbox" />
+          <span>对话区里显示收到的弹幕</span>
+        </div>
+        <div class="row check">
+          <input id="chatShowIds" type="checkbox" />
+          <span>对话区里显示每条弹幕的 id / uid（排查问题时用）</span>
+        </div>
+        <label class="row">
+          <span>对话区高度</span>
+          <input id="chatHeight" type="range" min="120" max="520" step="10" />
+          <output id="chatHeightOut"></output>
+        </label>
+        <div class="drawer-actions">
+          <button id="testBtn">发一条测试回复</button>
+          <button id="resetPosBtn">重置位置</button>
+        </div>
+        <div class="drawer-actions">
+          <button id="hideBtn" class="danger-ghost">关闭悬浮窗</button>
+          <button id="quitAppBtn" class="danger-ghost">退出整个程序</button>
+        </div>
+        <p class="hint" id="drawerHint">按住悬浮窗最上面那一行可以拖动整个悬浮窗。</p>
+      </div>
+    </div>
+
+    <script src="../../shared/emotions.js"></script>
+    <script src="overlay.js"></script>
+  </body>
+</html>

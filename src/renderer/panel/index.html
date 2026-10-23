@@ -1,0 +1,1481 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' data:; font-src 'self';"
+    />
+    <title>直播 AI 搭档 · 控制面板</title>
+    <link rel="stylesheet" href="panel.css" />
+    <script src="../../shared/error-reporter.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">🎙️</span>
+        <div>
+          <h1>直播 AI 搭档</h1>
+          <p class="sub" id="roomLabel">还没连接直播间</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="pill" id="danmakuPill"><i class="dot"></i><span>弹幕未连接</span></span>
+        <span class="pill" id="aiPill"><i class="dot"></i><span>AI 待机</span></span>
+        <span class="pill" id="queuePill"><span>队列 0</span></span>
+        <button id="toggleDanmaku" class="btn primary">开始监听弹幕</button>
+        <button id="toggleOverlayTop" class="btn">显示悬浮窗</button>
+        <button id="openDrawer" class="btn">悬浮窗快捷设置</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="studio">直播控制台</button>
+      <button class="tab" data-tab="api">DeepSeek API</button>
+      <button class="tab" data-tab="danmaku">弹幕设置</button>
+      <button class="tab" data-tab="overlay">悬浮窗</button>
+      <button class="tab" data-tab="mascot">吉祥物</button>
+      <button class="tab" data-tab="speech">语音</button>
+      <button class="tab" data-tab="knowledge">知识库</button>
+      <button class="tab" data-tab="logs">运行日志</button>
+    </nav>
+
+    <main>
+      <!-- ================= 直播控制台 ================= -->
+      <section class="panel active" id="tab-studio">
+        <div class="studio-grid">
+          <div class="card">
+            <div class="card-head">
+              <h2>弹幕实时流</h2>
+              <div class="card-head-actions">
+                <span class="hint" id="dmFeedCount">收到 0 · 忽略 0 · 已回 0</span>
+                <label class="mini-check"><input id="feedOnlyReply" type="checkbox" />只看会回复的</label>
+                <button class="btn tiny" id="clearFeed">清屏</button>
+              </div>
+            </div>
+            <div class="feed" id="danmakuFeed">
+              <p class="empty">还没有收到弹幕。填好房间号后点右上角「开始监听弹幕」。</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>AI 说的话</h2>
+              <div class="card-head-actions">
+                <button class="btn tiny" id="clearReplies">清屏</button>
+              </div>
+            </div>
+            <div class="feed replies" id="replyFeed">
+              <p class="empty">AI 的回复会显示在这里，也会同步出现在悬浮窗。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card composer">
+          <div class="card-head">
+            <h2>主动和搭档说话</h2>
+            <span class="hint">这里输入的话会当成“主播说的”，搭档会用回复弹幕的方式接你的话。</span>
+          </div>
+          <p class="tip">
+            想<b>直接改模型的设定</b>，用开发者模式开头：<b>[开发者模式] 你要它做的事</b><br />
+            例如：<b>[开发者模式] 以后回复结尾都加个「喵」</b> ·
+            <b>[开发者模式] 别再用「哈哈哈」开头</b> · <b>[开发者模式] 以后别接地域黑</b><br />
+            这样模型会把这条当成<b>必须执行的指令</b>，不会误当成观众越权而推掉。<br />
+            注意：「开发者模式」这四个字<b>只有在输入框发才算数</b>；观众在弹幕里打这几个字不起作用。
+          </p>
+          <div class="composer-row">
+            <textarea
+              id="operatorInput"
+              rows="3"
+              placeholder="例如：刚刚那个问配置的老哥，帮我详细讲讲（Ctrl+Enter 发送）&#10;要改设定就写：[开发者模式] 以后回复结尾加个喵"
+            ></textarea>
+            <div class="composer-actions">
+              <button class="btn primary" id="sendOperator">发送并让它接话</button>
+              <button class="btn" id="replyRecent">让它回最近30秒的弹幕</button>
+              <button class="btn" id="warmupNow">让她主动搭一句</button>
+              <button class="btn" id="pauseToggle">暂停 / 恢复回复</button>
+              <button class="btn" id="testReply">在悬浮窗发一条测试回复</button>
+              <button class="btn danger-ghost" id="clearHistory">清空对话记忆</button>
+            </div>
+          </div>
+          <div class="quick-replies">
+            <span class="hint">快捷指令：</span>
+            <button class="chip" data-quick="跟大家打个招呼，顺便介绍一下你自己。">打个招呼</button>
+            <button class="chip" data-quick="现在直播间有点安静，主动找个话题跟大家聊聊。">暖场找话题</button>
+            <button class="chip" data-quick="提醒一下观众点关注和加粉丝团，语气自然一点别太硬。">提醒关注</button>
+            <button class="chip" data-quick="帮我谢一下刚刚送礼物的观众。">谢礼物</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= DeepSeek API ================= -->
+      <section class="panel" id="tab-api">
+        <div class="card">
+          <div class="card-head"><h2>接口配置</h2></div>
+          <div class="form">
+            <label class="field">
+              <span>API Key</span>
+              <div class="inline">
+                <input id="apiKey" type="password" placeholder="sk-xxxxxxxxxxxxxxxx" autocomplete="off" />
+                <button class="btn tiny" id="toggleKey">显示</button>
+              </div>
+              <small>在 platform.deepseek.com → API keys 里创建，只保存在本机 data/settings.json。</small>
+            </label>
+            <label class="field">
+              <span>接口地址</span>
+              <input id="baseUrl" type="text" placeholder="https://api.deepseek.com" />
+              <small>默认官方地址；用中转站的话填中转地址（结尾不用带 /v1）。</small>
+            </label>
+            <div class="grid-3">
+              <label class="field">
+                <span>模型</span>
+                <select id="model">
+                  <option value="deepseek-flash">deepseek-flash（V4.1 Flash，推荐）</option>
+                  <option value="deepseek-v4-pro">deepseek-v4-pro（更强，贵且慢）</option>
+                </select>
+                <small>用中转站的话，这里可能得填中转站自己的模型名。</small>
+              </label>
+              <label class="field">
+                <span>思考档位</span>
+                <select id="thinking">
+                  <option value="off">off（不思考，最快）</option>
+                  <option value="low">low（推荐：想一点点）</option>
+                  <option value="high">high（想得多，慢约 1.5 秒）</option>
+                  <option value="max">max（想最多，最慢）</option>
+                </select>
+                <small>思考内容也算进 max_tokens。直播建议 off 或 low。</small>
+              </label>
+              <label class="field">
+                <span>超时时间（秒）</span>
+                <input id="timeoutSec" type="number" min="5" max="300" step="1" />
+              </label>
+            </div>
+            <div class="grid-2">
+              <label class="field">
+                <span>温度 temperature：<b id="temperatureOut"></b></span>
+                <input id="temperature" type="range" min="0" max="2" step="0.05" />
+                <small>越高越活泼跳脱，建议 0.9 ~ 1.3。开思考时这项不生效（官方限制）。</small>
+              </label>
+              <label class="field">
+                <span>单次回复最大长度 max_tokens</span>
+                <input id="maxTokens" type="number" min="30" max="65536" step="50" />
+                <small>留够余量（建议 1000 以上）：思考内容也占这个额度，太小会出现空回复。</small>
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn primary" id="testLlm">测试连接</button>
+              <span class="test-result" id="llmResult"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>最高权限（全自动）</h2>
+            <span class="hint" id="maxPermHint">默认关着：她只提议，花钱和写库都要你点头。</span>
+          </div>
+          <div class="form">
+            <label class="mini-check">
+              <input id="maxPermissions" type="checkbox" />
+              开启最高权限：她自己联网查、自己把查到的写进知识库、自己调用软件功能、自己删条目
+            </label>
+            <div class="grid2">
+              <label class="field">
+                <span>她自己联网最多几次 / 小时</span>
+                <input type="number" id="maxSearchPerHour" min="0" max="100" step="1" />
+                <small>0 = 不限。这一项是**花钱**的，默认收紧；到顶了她会把待办攒着等你点。</small>
+              </label>
+              <label class="field">
+                <span>她自己调用软件功能最多几次 / 小时</span>
+                <input type="number" id="maxToolsPerHour" min="0" max="500" step="1" />
+                <small>0 = 不限。防她反复暂停/恢复这类钻牛角尖。</small>
+              </label>
+            </div>
+            <p class="tip" id="maxPermDetail">
+              <b>打开之后她能做</b>：自己决定要不要联网查（`[待查:]` 不再问你）；把查到的东西
+              <b>自己写进知识库</b>（每条都会留一份旧版本，在「知识库」页的「知识库改动记录」里能一键撤销）；
+              在回复里点这几个软件功能：<code>[做:暂停]</code> / <code>[做:暂停|30]</code> / <code>[做:恢复]</code> /
+              <code>[做:静音]</code> / <code>[做:取消静音]</code> / <code>[做:开个话题]</code> / <code>[做:清空对话]</code> /
+              <code>[做:导出记录]</code>；删掉确实不该留的知识（<code>[删掉:条目|为什么]</code>，删之前自动备份）。<br />
+              <b>任何档位都不给她的</b>：向直播间发弹幕/点赞/关注（这个软件对 B 站始终只读）、开始或停止弹幕监听、
+              改 API Key / 房间号。改人设走另一道门：<b>只有你在开发者模式下说</b>（<code>[开发者模式] 以后你的人设是…</code>），
+              跟这个开关无关，改之前会把旧的存一份到 <code>data\settings-history\</code>。
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>角色</h2>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="newRole">新建角色</button>
+              <button class="btn tiny" id="deleteRole">删除当前角色</button>
+            </div>
+          </div>
+          <div class="form">
+            <div class="grid-2">
+              <label class="field">
+                <span>当前角色</span>
+                <select id="roleSelect">
+                  <option value="">（正在读取角色…）</option>
+                </select>
+                <small id="roleHint">切换角色会同时换掉下面的名字、人设、性格。</small>
+              </label>
+              <label class="field">
+                <span>角色图标（可选）</span>
+                <input id="roleEmoji" type="text" maxlength="8" placeholder="🐟" />
+                <small>只是个标记，方便你一眼认出现在是谁。</small>
+              </label>
+            </div>
+            <p class="tip">
+              下面这栏「名字 / 人设 / 性格」就是<b>当前角色</b>的内容，改任何一项都会自动存进这个角色；
+              换角色时会把整份内容换掉。<b>默认角色</b>是你原本配的那个人设，删不掉；
+              想基于现在的角色改一个，点右上角「新建角色」。
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>人设 · 说话风格</h2>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="restorePersona">恢复默认人设</button>
+            </div>
+          </div>
+          <div class="form">
+            <div class="grid-3">
+              <label class="field">
+                <span>它的名字</span>
+                <input id="botName" type="text" placeholder="小助手" />
+              </label>
+              <label class="field">
+                <span>记忆轮数</span>
+                <input id="contextRounds" type="number" min="0" max="40" step="1" />
+                <small>带入多少轮历史对话，0 = 不记上下文。</small>
+              </label>
+              <label class="field">
+                <span>记忆保留（分钟）</span>
+                <input id="memoryMinutes" type="number" min="0" max="600" step="1" />
+                <small>超过这个时间的旧对话不再带上。</small>
+              </label>
+            </div>
+            <label class="field">
+              <span>系统提示词（System Prompt）</span>
+              <textarea id="systemPrompt" rows="14" spellcheck="false"></textarea>
+              <small>这里只写「人设」就行：程序会自动追加身份、聊天原则、权限规则、输出要求（40 字以内、情绪标记等）。</small>
+            </label>
+            <label class="field">
+              <span>性格 / 说话风格（可选）</span>
+              <textarea id="styleNotes" rows="3" spellcheck="false" placeholder="例如：傲娇毒舌但心软，爱用颜文字；不懂就直接说不知道，别装懂。"></textarea>
+              <small>和人设分开写：人设回答「它是谁」，这里回答「它怎么说话」。会作为一行追加进提示词。</small>
+            </label>
+            <div class="actions">
+              <button class="btn" id="showFullPrompt">查看 / 修改完整提示词</button>
+              <span class="hint">下面是完整模板，可直接编辑；占位符会在每次请求时换成真实值。</span>
+            </div>
+            <div id="fullPromptBox" hidden>
+              <p class="tip">
+                可用占位符（原样写在文本里，程序每次请求都会替换）：
+                <b>{人设}</b> 上面输入框的内容 ·
+                <b>{性格}</b> 性格那一栏（没填时整行变空）·
+                <b>{搭档名字}</b> <b>{称呼}</b> ·
+                <b>{主播称呼}</b> 整句（没填名字时自动换成「不知道真名」那句）·
+                <b>{当前时间}</b> ·
+                <b>{情绪清单}</b> 12 个吉祥物状态（跟着「吉祥物」页自动生成）·
+                <b>{风格备注}</b> <b>{直播标题}</b> <b>{自我备注要求}</b>（用不上时整段变空）
+              </p>
+              <textarea class="prompt-editor" id="fullPromptText" rows="18" spellcheck="false"></textarea>
+              <div class="actions">
+                <button class="btn primary" id="saveFullPrompt">保存这份提示词</button>
+                <button class="btn" id="previewFullPrompt">预览渲染结果</button>
+                <button class="btn danger-ghost" id="resetFullPrompt">恢复默认模板</button>
+                <span class="hint" id="fullPromptState"></span>
+              </div>
+              <pre class="prompt-preview" id="fullPromptPreview" hidden></pre>
+            </div>
+          </div>
+        </div>
+
+
+        <div class="card">
+          <div class="card-head">
+            <h2>直播上下文 · 让 AI 自己适应</h2>
+            <span class="hint">全部可选，默认保持最通用的状态</span>
+          </div>
+          <div class="form">
+            <div class="grid-2">
+              <label class="field">
+                <span>主播称呼（留空 = 不告诉它主播叫什么）</span>
+                <input id="anchorName" type="text" placeholder="留空即可，它会统一叫「主播」" />
+                <small>填了以后它会用这个名字称呼你；不填就不会瞎猜名字。</small>
+              </label>
+              <label class="field">
+                <span>直播间上下文</span>
+                <div class="stack">
+                  <label class="row-check">
+                    <input id="sendStreamTitle" type="checkbox" />
+                    <span>把直播标题发给 AI 作气氛参考（默认关，避免话题被标题带偏）</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="selfTuning" type="checkbox" />
+                    <span>允许 AI 自己微调说话风格（它会总结一句风格备注，带进后续对话）</span>
+                  </label>
+                </div>
+                <small>主播名和直播间标题默认都不发送，也就是换个直播间不用改任何设置就能直接用。</small>
+              </label>
+            </div>
+            <div class="field">
+              <span>AI 当前的风格备注</span>
+              <div class="inline">
+                <input id="selfNoteView" type="text" readonly placeholder="（还没有，聊一会儿它可能会自己总结一句）" />
+                <button class="btn tiny" id="clearSelfNote">清除</button>
+              </div>
+              <small>这是 AI 根据聊天内容自己写的一句话，下一轮对话会带上；不满意就清掉。</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>安全</h2>
+            <span class="hint">防止报错刷屏、白烧额度</span>
+          </div>
+          <div class="form">
+            <label class="field">
+              <span>安全开关</span>
+              <div class="stack">
+                <label class="row-check">
+                  <input id="autoPauseOnError" type="checkbox" />
+                  <span>连续调用失败时自动暂停回复（避免一路报错刷屏、白烧额度）</span>
+                </label>
+                <label class="field">
+                  <span>连续失败几次后暂停</span>
+                  <input id="maxConsecutiveFailures" type="number" min="1" max="20" step="1" />
+                </label>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- 主动搭话（2026-10-21 替换原来的「冷场暖场」）：时机 / 频率 / 方式全都是开关，规矩写进提示词 -->
+        <div class="card">
+          <div class="card-head">
+            <h2>主动搭话</h2>
+            <span class="hint" id="proactiveHint">冷场时让她自己开口（默认关）</span>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="proactiveNow">让她现在搭一句</button>
+            </div>
+          </div>
+          <div class="form">
+            <p class="tip">
+              安静太久的时候由她自己说一句，走的是正常回复链路（悬浮窗、对话区、语音朗读都照旧）。<br />
+              <b>什么时候说</b>、<b>说多少</b>、<b>用哪种方式</b>是下面这些开关；<b>说什么风格、有什么规矩</b>
+              写在最下面的「搭话规矩」里，会原样拼进每一次搭话的提示词。
+            </p>
+            <label class="row-check">
+              <input id="proactiveEnabled" type="checkbox" />
+              <span>开启主动搭话（关着就完全不主动开口）</span>
+            </label>
+            <div class="grid-3">
+              <label class="field">
+                <span>安静多少秒后搭话</span>
+                <input id="proactiveIdleSeconds" type="number" min="30" max="1800" step="10" />
+                <small>收到弹幕会重新计时；只说一句，不会连发。</small>
+              </label>
+              <label class="field">
+                <span>每小时最多几次</span>
+                <input id="proactiveMaxPerHour" type="number" min="0" max="60" step="1" />
+                <small>0 = 不限。别设太大，整场自言自语观众会烦。</small>
+              </label>
+              <label class="field">
+                <span>每次冷场真开口的概率</span>
+                <div class="inline">
+                  <input id="proactiveChance" type="range" min="0" max="100" step="5" />
+                  <output id="proactiveChanceOut"></output>
+                </div>
+                <small>100% 就是每次冷场都说；低一点更像真人，不会掐着表说话。</small>
+              </label>
+            </div>
+            <div class="grid-3">
+              <label class="field">
+                <span>一句话最多几个字</span>
+                <input id="proactiveMaxChars" type="number" min="20" max="120" step="5" />
+                <small>超太长的按这条不发。</small>
+              </label>
+              <label class="field">
+                <span>允许的搭话方式</span>
+                <div class="stack">
+                  <label class="row-check">
+                    <input id="proactiveModeTopic" type="checkbox" />
+                    <span>开话题（可以拿知识库当谈资）</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="proactiveModeAsk" type="checkbox" />
+                    <span>问观众一个容易回答的小问题</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="proactiveModeFollow" type="checkbox" />
+                    <span>接住刚才没人接的话头</span>
+                  </label>
+                </div>
+                <small>三种都关 = 不会主动搭话（等同关闭）。</small>
+              </label>
+              <label class="field">
+                <span>其他</span>
+                <div class="stack">
+                  <label class="row-check">
+                    <input id="proactiveUseKnowledge" type="checkbox" />
+                    <span>允许从知识库挑「可以聊的料」</span>
+                  </label>
+                </div>
+                <small>关掉也能搭话，只是不会拿知识库里的东西当谈资。</small>
+              </label>
+            </div>
+            <label class="field">
+              <span>搭话规矩（会原样写进提示词，想加什么都能写）</span>
+              <textarea id="proactivePrompt" rows="3"></textarea>
+              <small>
+                例如：「别问观众隐私」「聊游戏的时候顺着聊，别硬切话题」「觉得现在不该说话就只回 [跳过]」。
+                她如果判断现在不该开口，会只回 <code>[跳过]</code>，这条就不发、也不计入次数。
+              </small>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 语音 ================= -->
+      <section class="panel" id="tab-speech">
+        <div class="card">
+          <div class="card-head">
+            <h2>语音朗读</h2>
+            <span class="hint">让搭档把回复念出来，观众能听见</span>
+          </div>
+          <div class="form">
+            <div class="grid-2">
+              <label class="field">
+                <span>开关</span>
+                <div class="stack">
+                  <label class="row-check">
+                    <input id="speechEnabled" type="checkbox" />
+                    <span>开启语音朗读（控制面板和悬浮窗都能随时开关）</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="speechReadViewer" type="checkbox" />
+                    <span>连观众的原话一起念（先念原话，停 0.5 秒再念回复）</span>
+                  </label>
+                </div>
+                <small id="speechStatus">正在检测系统语音…</small>
+              </label>
+              <label class="field">
+                <span>用哪个引擎念</span>
+                <div class="stack">
+                  <label class="row-check">
+                    <input type="radio" name="speechEngine" id="speechEngineSystem" value="system" />
+                    <span><b>系统语音</b>：Windows 自带，离线、免费、零延迟（默认）</span>
+                  </label>
+                  <label class="row-check">
+                    <input type="radio" name="speechEngine" id="speechEngineCloud" value="cloud" />
+                    <span><b>云音色</b>：音色好听得多，但要联网、有几毫秒到几百毫秒的延迟</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="speechFallback" type="checkbox" />
+                    <span>云端失败时自动退回系统语音（<b>建议开着</b>，否则会突然没声音）</span>
+                  </label>
+                </div>
+                <small id="ttsStatus">正在读取云端语音状态…</small>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>系统语音设置</h2>
+            <span class="hint">引擎选「系统语音」时用这套；选云音色时，它作为失败后的备胎</span>
+          </div>
+          <div class="form">
+            <label class="field">
+              <span>语音</span>
+              <select id="speechVoice">
+                <option value="">自动（优先中文语音）</option>
+              </select>
+              <small>只列出了系统里已安装的语音；想换别的音色需要在 Windows 设置里添加语音包。</small>
+            </label>
+            <div class="grid-3">
+              <label class="field">
+                <span>语速：<b id="speechRateOut"></b></span>
+                <input id="speechRate" type="range" min="0.5" max="2" step="0.05" />
+              </label>
+              <label class="field">
+                <span>音调：<b id="speechPitchOut"></b></span>
+                <input id="speechPitch" type="range" min="0.5" max="2" step="0.05" />
+              </label>
+              <label class="field">
+                <span>音量：<b id="speechVolumeOut"></b></span>
+                <input id="speechVolume" type="range" min="0" max="1" step="0.05" />
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn" id="speechTest">用系统语音试听一句</button>
+              <span class="hint">直播中想临时闭嘴：悬浮窗快捷设置里的「🔊」按钮，或这里关掉开关。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>云音色设置</h2>
+            <span class="hint">现在是阿里云百炼（DashScope）的 Qwen 语音合成</span>
+          </div>
+          <div class="form">
+            <p class="tip">
+              <b>怎么开通</b>：去阿里云百炼控制台建一个 API Key（<code>sk-</code> 开头），粘到下面即可。<br />
+              计费按字符算，约 <b>0.8 元/万字符</b>——一场 3 小时直播念 500 条大约 3~4 万字符，折合 <b>3 元左右</b>。<br />
+              音色从下拉里挑一个就行（12 个内置音色，选中后下面会写它的声音特点）；想用<b>自己设计 / 复刻的音色</b>，
+              把拿到的音色 ID 填进「自定义音色 ID」。<br />
+              同一条内容只会合成一次（本地缓存），重复的句子不重复花钱。
+            </p>
+            <p class="tip">
+              <b>挑音色小技巧</b>：填好 Key 之后，改一次「音色」就点一次下面的「用云音色试听一句」，
+              几个候选连着听一遍最快。<b>二次元风格</b>看 <code>Chelsie 千雪</code>；
+              想活泼搞怪看 <code>Momo 茉兔</code>；温柔一点看 <code>Serena 苏瑶</code> 或 <code>Maia 四月</code>；
+              男声看 <code>Ethan 晨煦</code> / <code>Moon 月白</code>。
+            </p>
+            <div class="grid-2">
+              <label class="field">
+                <span>API Key</span>
+                <div class="stack">
+                  <input id="ttsApiKey" type="password" placeholder="sk-..." />
+                  <button class="btn tiny" id="toggleTtsKey" type="button">显示</button>
+                </div>
+                <small>只保存在本机 <code>data/settings.json</code>，和 DeepSeek 的 Key 一样。</small>
+              </label>
+              <label class="field">
+                <span>音色</span>
+                <div class="stack">
+                  <select id="ttsVoice">
+                    <option value="">（正在读取音色列表…）</option>
+                  </select>
+                  <input id="ttsVoiceCustom" type="text" placeholder="自定义音色 ID" />
+                </div>
+                <small id="ttsVoiceDesc">正在读取音色列表…</small>
+                <small>换音色不用换模型。右边那个框是给以后自己设计 / 复刻的音色 ID 用的（填了就优先用它）。</small>
+              </label>
+            </div>
+            <div class="grid-2">
+              <label class="field">
+                <span>模型</span>
+                <select id="ttsModel">
+                  <option value="">（正在读取模型列表…）</option>
+                </select>
+                <small id="ttsModelHint">换模型会自动把音色换成那个模型认的（音色不能跨模型混用）。</small>
+              </label>
+              <label class="field">
+                <span>接口地址</span>
+                <input id="ttsBaseUrl" type="text" placeholder="https://dashscope.aliyuncs.com" />
+                <small>北京和新加坡的地址/密钥不通用。</small>
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn primary" id="ttsTest">用云音色试听一句</button>
+              <button class="btn" id="ttsClearCache">清空语音缓存</button>
+              <span class="hint" id="ttsCacheInfo"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 弹幕设置 ================= -->
+      <section class="panel" id="tab-danmaku">
+        <div class="card login-card">
+          <div class="card-head">
+            <h2>B 站账号</h2>
+            <span class="hint">登录后弹幕里能看到观众真实昵称，AI 才能叫得出名字</span>
+          </div>
+          <div class="account-row">
+            <div class="avatar-slot" id="accountAvatar">👤</div>
+            <div class="account-main">
+              <div class="account-name" id="accountName">未登录</div>
+              <div class="account-sub" id="accountSub">
+                未登录时 B 站会隐藏观众昵称（显示为 ***），弹幕内容本身不受影响。
+              </div>
+            </div>
+            <div class="account-actions">
+              <button class="btn primary" id="biliLoginBtn">登录 B 站账号</button>
+              <button class="btn" id="biliVerifyBtn">检查登录状态</button>
+              <button class="btn danger-ghost" id="biliLogoutBtn">退出登录</button>
+            </div>
+          </div>
+          <p class="tip">
+            点「登录 B 站账号」会弹出 <b>B 站官方登录页</b>（支持扫码 / 密码 / 短信），登录成功后自动保存凭据，窗口会自己关掉。<br />
+            凭据只保存在本机 <code>data/settings.json</code>，只用于<b>读取弹幕</b>；程序不会自动发弹幕、不会点赞、不会做任何写操作。
+          </p>
+          <details class="manual-cookie">
+            <summary>不想在软件里登录？手动粘贴 Cookie（备用方式）</summary>
+            <div class="form">
+              <label class="field">
+                <span>SESSDATA / 整段 Cookie</span>
+                <textarea id="sessdata" rows="3" placeholder="可以只粘贴 SESSDATA 的值，也可以粘贴整段 Cookie"></textarea>
+                <small>浏览器登录 B 站 → F12 → Application → Cookies → https://www.bilibili.com，复制 SESSDATA 的值。</small>
+              </label>
+              <div class="actions">
+                <button class="btn" id="verifyManualCookie">校验这段 Cookie</button>
+                <button class="btn" id="applyManualCookie">保存并用于监听</button>
+                <span class="test-result" id="manualCookieResult"></span>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>直播间</h2></div>
+          <div class="form">
+            <label class="field">
+              <span>直播间房间号</span>
+              <div class="inline">
+                <input id="roomId" type="text" placeholder="例如 1234567（直播间网址 live.bilibili.com/ 后面的数字）" />
+                <button class="btn" id="testDanmaku">测试连接</button>
+              </div>
+              <small id="danmakuTestResult">短号 / 长号都可以，程序会自动解析成真实房间号。</small>
+            </label>
+            <label class="row-check">
+              <input id="autoStart" type="checkbox" />
+              <span>软件启动后自动开始监听弹幕</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>收包统计</h2>
+            <span class="hint">怀疑「有的弹幕没读到」时看这里：分清是没收到、还是被规则忽略了</span>
+          </div>
+          <div class="usage-grid">
+            <div class="usage-item">
+              <div class="usage-label">收到弹幕</div>
+              <div class="usage-value" id="dmReceived">0</div>
+              <div class="usage-sub" id="dmPackets">数据包 0 · 命令 0</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-label">被规则忽略</div>
+              <div class="usage-value" id="dmFiltered">0</div>
+              <div class="usage-sub" id="dmFilterReasons">—</div>
+            </div>
+            <div class="usage-item highlight">
+              <div class="usage-label">已回复</div>
+              <div class="usage-value" id="dmReplied">0</div>
+              <div class="usage-sub" id="dmQueue">队列 0</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-label">异常</div>
+              <div class="usage-value" id="dmDropped">0</div>
+              <div class="usage-sub" id="dmDroppedDetail">解析失败 0 · 重复 0</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-label">id 复用</div>
+              <div class="usage-value" id="dmIdCollision">0</div>
+              <div class="usage-sub" id="dmIdCollisionSub">同 id 不同弹幕</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-label">回复异常</div>
+              <div class="usage-value" id="dmGarbled">0</div>
+              <div class="usage-sub" id="dmGarbledSub">回复正常</div>
+            </div>
+          </div>
+          <p class="tip">
+            「收到弹幕」明显少于直播间实际数量 → 连接漏包（把日志发我）；<br />
+            「被规则忽略」很多 → 看下面的原因，多半是屏蔽词或单条字数限制；<br />
+            「id 复用」在涨 → B 站给不同弹幕发了同一个 id，这些弹幕现在都会被正常显示（不会漏）；<br />
+            「回复异常」在涨 → 模型偶发胡言乱语，程序会自动重答，重答也不行就宁可不发。
+            <b>频繁出现请把温度调低</b>（「DeepSeek API」页，建议 0.9~1.1）。
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>弹幕记录</h2>
+            <span class="hint">把收到的每一条弹幕都逐条写进文件，包括被去重丢掉的</span>
+          </div>
+          <div class="form">
+            <label class="row-check">
+              <input id="danmakuLogEnabled" type="checkbox" />
+              <span>开启弹幕记录（推荐开：出问题时才能对照出到底漏了哪条）</span>
+            </label>
+            <div class="grid-2">
+              <label class="field">
+                <span>单个文件上限（MB）</span>
+                <input id="danmakuLogMaxFileMB" type="number" min="0.1" max="100" step="0.5" />
+                <small>写满就自动归档，不会把磁盘写满。</small>
+              </label>
+              <label class="field">
+                <span>保留最近几个归档</span>
+                <input id="danmakuLogKeepFiles" type="number" min="1" max="50" step="1" />
+                <small>超出份数的旧归档会被删掉，保证占用有上限。</small>
+              </label>
+            </div>
+            <div class="inline">
+              <button id="danmakuLogOpenBtn" class="btn" type="button">打开记录文件位置</button>
+              <button id="danmakuLogChooseBtn" class="btn" type="button">换个位置…</button>
+            </div>
+            <label class="field">
+              <span>记录文件完整路径</span>
+              <input id="danmakuLogStatus" type="text" readonly />
+              <small>故意没放在程序目录里：实测程序目录的 data 会被一些清理软件当垃圾扫掉，连 .log 一起删。默认放在「我的文档\直播AI搭档\弹幕记录」。</small>
+            </label>
+            <p class="tip">
+              每行一条，格式为「时间　弹幕id　昵称　正文　[处理结果]」，正文在最后，所以正文里有空格也不影响阅读。<br />
+              处理结果有四种：<b>正常</b>（显示并交给 AI）、<b>重复·同id</b>（同一条被服务端重发）、
+              <b>重复·无id</b>（没有 id 的弹幕靠内容+时间戳判重）、<b>解析失败</b>（报文结构不认识）。<br />
+              想查「某位观众发了什么」，直接打开文件搜昵称即可——被去重丢掉的弹幕也在里面。
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>回复策略</h2></div>
+          <div class="form">
+            <div class="grid-3">
+              <label class="field">
+                <span>触发方式</span>
+                <select id="triggerMode">
+                  <option value="all">所有弹幕都考虑回复</option>
+                  <option value="keyword">只回复含关键词的弹幕</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>最短回复间隔（秒）</span>
+                <input id="minIntervalSec" type="number" min="0" max="120" step="1" />
+                <small>防止刷屏，也省 token。</small>
+              </label>
+              <label class="field">
+                <span>弹幕合并窗口（毫秒）</span>
+                <input id="batchWindowMs" type="number" min="200" max="10000" step="100" />
+                <small>这段时间内的弹幕合成一次提问。</small>
+              </label>
+            </div>
+            <div class="grid-2">
+              <label class="field">
+                <span>关键词（触发/屏蔽共用）</span>
+                <textarea id="ignoreKeywords" rows="3" placeholder="用逗号分隔，例如：打卡,签到,抽奖"></textarea>
+                <small>触发方式选“只回复含关键词”时，这里是白名单；选“所有弹幕”时，这里是屏蔽词。</small>
+              </label>
+              <label class="field">
+                <span>不回谁（用户名，逗号分隔）</span>
+                <textarea id="blockedUsers" rows="3" placeholder="例如：广告机器人,某某某"></textarea>
+                <small>另外还会自动忽略超长弹幕和纯表情空白弹幕。</small>
+              </label>
+            </div>
+            <div class="grid-3">
+              <label class="field">
+                <span>单条弹幕最长字数</span>
+                <input id="maxLength" type="number" min="10" max="1000" step="5" />
+              </label>
+              <label class="field">
+                <span>一次最多合并几条</span>
+                <input id="maxBatch" type="number" min="1" max="20" step="1" />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- 观众记忆（2026-10-21）：本场文档由模型批量总结、老观众名册纯本地维护 -->
+        <div class="card">
+          <div class="card-head">
+            <h2>观众记忆</h2>
+            <span class="hint" id="memoryStatus">正在读取…</span>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="memoryOpenFile">看本场文档</button>
+              <button class="btn tiny" id="memoryOpenRoster">看老观众名册</button>
+              <button class="btn tiny" id="memoryOpenFolder">打开文件夹</button>
+            </div>
+          </div>
+          <div class="form">
+            <p class="tip">
+              解决「清空对话记忆之后她就失忆了」：直播中把**观众说过什么、主播定过什么**提炼成一份文档，
+              每轮回复都会带一段短摘要（清空上下文也照样带）。<br />
+              <b>本场文档</b>：从你打开「本场记录」到关掉（或退出程序）算一场，一份文件；由模型每隔一会儿总结一次。<br />
+              <b>老观众名册</b>：谁在这个直播间发过弹幕、发过多少条——纯本地记，不花一分钱，长期复用。<br />
+              两份文件都在 <code>data\观众记忆\</code>，**不进知识库**（不会被整理校对改、也不参与检索）；
+              文档和名册都能用记事本直接改。
+            </p>
+            <div class="grid-3">
+              <label class="field">
+                <span>本场记录</span>
+                <div class="stack">
+                  <label class="row-check">
+                    <input id="memoryAutoStart" type="checkbox" />
+                    <span>每次启动自动记录（默认开）</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="memoryEnabled" type="checkbox" />
+                    <span>开启（关掉就结束本场）</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="memoryRosterEnabled" type="checkbox" />
+                    <span>记老观众名册（不花模型钱）</span>
+                  </label>
+                </div>
+                <small>
+                  关掉「每次启动自动记录」只影响下次启动，这一场照记；退出程序时不等网络，没总结完的会如实写在文件末尾。
+                </small>
+              </label>
+              <label class="field">
+                <span>每批多少条总结一次</span>
+                <input id="memoryBatchSize" type="number" min="5" max="60" step="5" />
+                <small>攒够这么多条弹幕就总结一次。</small>
+              </label>
+              <label class="field">
+                <span>最多隔多久总结一次（秒）</span>
+                <input id="memoryIntervalSec" type="number" min="30" max="1800" step="10" />
+                <small>不够一批也会按这个间隔总结，免得冷场时记不下来。</small>
+              </label>
+            </div>
+            <div class="grid-3">
+              <label class="field">
+                <span>每小时最多总结几次</span>
+                <input id="memoryMaxBatches" type="number" min="0" max="60" step="1" />
+                <small>0 = 不限。刷屏时不会一直调模型（一次约 0.01~0.03 元）。</small>
+              </label>
+              <label class="field">
+                <span>每轮注入多少字摘要</span>
+                <input id="memoryInjectChars" type="number" min="200" max="1500" step="50" />
+                <small>太大占上下文；清空对话记忆之后也照样带。</small>
+              </label>
+              <label class="field">
+                <span>名册最多记多少人</span>
+                <input id="memoryRosterMax" type="number" min="50" max="10000" step="50" />
+                <small>超了按「最近出现」淘汰。</small>
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn tiny" id="memoryFlush">现在总结一批</button>
+              <button class="btn tiny" id="memoryClearSession">清空本场</button>
+              <button class="btn tiny danger-ghost" id="memoryClearRoster">清空老观众名册</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 悬浮窗 ================= -->
+      <section class="panel" id="tab-overlay">
+        <div class="card">
+          <div class="card-head">
+            <h2>悬浮窗位置与外观</h2>
+            <div class="card-head-actions">
+              <button class="btn tiny primary" id="toggleOverlayVisible">显示 / 隐藏悬浮窗</button>
+              <button class="btn tiny" id="reloadOverlay">重载悬浮窗</button>
+            </div>
+          </div>
+          <div class="form">
+            <div class="grid-2">
+              <label class="row-check">
+                <input id="overlayAutoShow" type="checkbox" />
+                <span>软件启动时自动显示悬浮窗（默认关闭，需要时手动打开）</span>
+              </label>
+              <label class="row-check">
+                <input id="overlayAutoOpenDrawer" type="checkbox" />
+                <span>打开悬浮窗时自动展开快捷设置（默认关闭，需要时点悬浮窗右上角 ⚙ 或按 Alt+S）</span>
+              </label>
+            </div>
+            <div class="grid-2">
+              <label class="field">
+                <span>横向位置：<b id="posXOut"></b></span>
+                <input id="posX" type="range" min="0" max="100" step="0.5" />
+              </label>
+              <label class="field">
+                <span>纵向位置：<b id="posYOut"></b></span>
+                <input id="posY" type="range" min="0" max="100" step="0.5" />
+              </label>
+            </div>
+            <div class="grid-3">
+              <label class="field">
+                <span>悬浮窗宽度：<b id="widthOut"></b></span>
+                <input id="width" type="range" min="180" max="700" step="10" />
+              </label>
+              <label class="field">
+                <span>吉祥物大小：<b id="mascotWidthOut"></b></span>
+                <input id="mascotWidth" type="range" min="80" max="560" step="4" />
+              </label>
+              <label class="field">
+                <span>字号缩放：<b id="fontScaleOut"></b></span>
+                <input id="fontScale" type="range" min="0.7" max="1.8" step="0.05" />
+              </label>
+            </div>
+            <div class="grid-3">
+              <label class="field">
+                <span>整体不透明度：<b id="opacityOut"></b></span>
+                <input id="opacity" type="range" min="0.3" max="1" step="0.05" />
+              </label>
+              <label class="field">
+                <span>回复停留：<b id="replySecondsOut"></b></span>
+                <input id="replySeconds" type="range" min="5" max="120" step="1" />
+                <small>多久没有新内容就淡出回复。</small>
+              </label>
+            </div>
+            <p class="tip">
+              AI 回复显示在<b>吉祥物上方</b>，只有一块，不排队：新回复直接覆盖旧的，
+              换内容会闪一下提示观众「话变了」，超过「回复停留」时间没有新内容就淡出。<br />
+              回复内容会同时留在下面的对话区，可以往回翻。
+            </p>
+            <div class="grid-2">
+              <label class="row-check">
+                <input id="alwaysOnTop" type="checkbox" />
+                <span>始终保持置顶</span>
+              </label>
+              <!-- 和悬浮窗顶栏那个 🔒 是同一个配置（overlay.locked） -->
+              <label class="row-check">
+                <input id="locked" type="checkbox" />
+                <span>锁定窗口位置（防止误拖，也关掉顶栏双击复位）</span>
+              </label>
+              <label class="row-check">
+                <input id="showViewerMessage" type="checkbox" />
+                <span>回复里同时显示观众的原话</span>
+              </label>
+              <label class="row-check">
+                <input id="replyPersist" type="checkbox" />
+                <span>回复气泡<b>不自动消失</b>（一直留到下一条回复）</span>
+              </label>
+              <label class="row-check">
+                <input id="hideInScreenshot" type="checkbox" />
+                <span>录屏 / 截图中隐藏悬浮窗（直播时不要开）</span>
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn" id="openDrawer2">在悬浮窗上打开快捷设置</button>
+              <button class="btn primary" id="sendTestReply">发送测试回复</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>对话区</h2>
+            <span class="hint">悬浮窗下半部分那块：观众弹幕、AI 回复、你自己打的字都在里面</span>
+          </div>
+          <div class="form">
+            <div class="grid-2">
+              <label class="row-check">
+                <input id="chatEnabled" type="checkbox" />
+                <span>显示对话区（关掉就只剩吉祥物 + 回复）</span>
+              </label>
+              <label class="row-check">
+                <input id="chatShowDanmaku" type="checkbox" />
+                <span>在对话区里显示观众弹幕（只留 AI 回复和你自己的话）</span>
+              </label>
+              <label class="row-check">
+                <input id="chatShowIds" type="checkbox" />
+                <span>显示弹幕 id / uid（默认关，排查漏弹幕时才需要）</span>
+              </label>
+              <label class="field">
+                <span>对话区高度（px）</span>
+                <input id="chatHeight" type="number" min="120" max="520" step="10" />
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="form">
+            <p class="tip">
+              提示：直播姬里添加「窗口捕获」并选择 <b>直播AI搭档-悬浮窗</b> 即可把搭档画进直播画面。若捕获不到透明背景，改用「游戏捕获 + 允许透明」或直接对屏幕区域做裁剪。
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 吉祥物 ================= -->
+      <section class="panel" id="tab-mascot">
+        <div class="card">
+          <div class="card-head">
+            <h2>吉祥物图片</h2>
+            <div class="card-head-actions">
+              <button class="btn primary tiny" id="pickImages">上传图片</button>
+              <span class="hint">建议 PNG 透明底，单张 4MB 以内，横竖都可以。</span>
+            </div>
+          </div>
+          <div class="mascot-grid" id="imageGrid"></div>
+          <div class="form">
+            <div class="grid-2">
+              <label class="field">
+                <span>没有图片时显示的 emoji</span>
+                <input id="fallbackEmoji" type="text" maxlength="4" placeholder="🦊" />
+              </label>
+              <label class="field">
+                <span>显示选项</span>
+                <div class="stack">
+                    <label class="row-check"><input id="animation" type="checkbox" /><span>开启呼吸 / 说话动画</span></label>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>表情映射</h2>
+            <span class="hint">给每种情绪指定一张图，AI 会根据回复的情绪自动切换。</span>
+          </div>
+          <p class="tip">
+            每一行下面那个输入框是<b>这个状态的触发词</b>：观众弹幕里出现这些词，
+            吉祥物立刻换表情，不用等 AI 回复（例如「哈哈」→ 开心）。<br />
+            多个词用「、」或逗号分隔；<b>清空表示这个状态不按触发词切</b>（AI 的情绪标记仍然有效）。<br />
+            也可以直接跟搭档说，例如：<b>「以后谁发『草』你就笑」</b>，它会自己记下来。
+          </p>
+          <p class="tip">
+            <b>内置这 12 个删不掉</b>（连接时打招呼、思考时切「思考」这些行为绑在它们身上），
+            但可以给它们换图、清空触发词。<b>想多几个表情就点最下面「＋ 添加自定义表情」</b>：
+            左边那道蓝色标的就是你自己加的，最多 8 个。每个自定义表情有四个可改的项——
+            <b>配图</b>、<b>什么时候用</b>（这句会原样进提示词，不写模型就不知道什么时候该用它）、
+            <b>触发词</b>、<b>别名</b>（可选：模型说「恼火」也认成「生气」）。
+          </p>
+          <div class="expression-grid" id="expressionGrid"></div>
+          <div class="actions">
+            <button class="btn" id="autoMap">按文件名自动匹配</button>
+            <button class="btn" id="previewEmotions">在悬浮窗依次预览所有表情</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 日志 ================= -->
+      <!-- ================= 知识库 ================= -->
+      <section class="panel" id="tab-knowledge">
+        <div class="card">
+          <div class="card-head">
+            <h2>知识库</h2>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="knowledgeReload">重新读取</button>
+              <button class="btn tiny" id="knowledgeOpenFolder">打开文件夹</button>
+            </div>
+          </div>
+          <div class="form">
+            <p class="tip">
+              <b>一条知识 = 一个 markdown 文件</b>，放在软件目录的 <code>知识库\notes\</code> 里。
+              回复弹幕前程序会拿弹幕去检索，<b>只把命中且确实相关的</b>几条附在这次请求里；
+              没命中就完全不带。<br />
+              选文件而不是数据库是故意的：你能用记事本直接改、能把整个「知识库」文件夹拷走备份。
+            </p>
+            <div class="grid-3">
+              <label class="field">
+                <span>回复时带资料</span>
+                <label class="mini-check"><input id="knowledgeEnabled" type="checkbox" />开启</label>
+                <small>关掉 = 完全不影响回复，只是不用知识库。</small>
+              </label>
+              <label class="field">
+                <span>最多带几条</span>
+                <input id="knowledgeInjectCount" type="number" min="0" max="10" step="1" />
+                <small>0 = 不带。</small>
+              </label>
+              <label class="field">
+                <span>总字数上限</span>
+                <input id="knowledgeInjectChars" type="number" min="200" max="4000" step="50" />
+                <small>整段上限（含开头那句附注）。防止资料把上下文和钱都吃掉。</small>
+              </label>
+            </div>
+            <p class="hint" id="knowledgeStats">正在读取…</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>检索预览</h2>
+            <span class="hint">输入一句弹幕，看实际会命中哪几条</span>
+          </div>
+          <div class="form">
+            <div class="stack">
+              <input id="knowledgeQuery" type="text" placeholder="例如：大肥鱼多少钱" />
+              <button class="btn" id="knowledgeSearchBtn">试试</button>
+            </div>
+            <div class="hint" id="knowledgeSearchOut">还没试过。</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>添加 / 编辑条目</h2>
+            <span class="hint" id="knowledgeEditHint">正在新增</span>
+          </div>
+          <div class="form">
+            <div class="grid-2">
+              <label class="field">
+                <span>标题</span>
+                <input id="knowledgeTitle" type="text" placeholder="例如：商品：大肥鱼玩偶" />
+              </label>
+              <label class="field">
+                <span>标签（逗号分隔）</span>
+                <input id="knowledgeTags" type="text" placeholder="商品,价格" />
+              </label>
+            </div>
+            <label class="field">
+              <span>正文</span>
+              <textarea id="knowledgeContent" rows="6" spellcheck="false" placeholder="写清楚就够：这条知识说了什么、该怎么用。"></textarea>
+            </label>
+            <div class="actions">
+              <button class="btn primary" id="knowledgeSave">保存条目</button>
+              <button class="btn" id="knowledgeCancelEdit" hidden>取消编辑</button>
+            </div>
+            <!-- 从文件导入（2026-10-19）：选 txt / md 之类的纯文本，让模型整理成待审草稿 -->
+            <div class="stack">
+              <div class="actions">
+                <button class="btn" id="knowledgeImport">📄 从文件导入…</button>
+                <span class="hint">支持 txt / md / csv / json / log，GBK 编码也认；一次最多 3 万字（超出会告诉你没处理）</span>
+              </div>
+              <div class="hint" id="knowledgeImportList">还没选文件。</div>
+            </div>
+          </div>
+        </div>
+
+        <!--
+          ============================================================
+          ⚠️ DSH 研究引擎已下线（2026-10-19）——整张卡被 `hidden` 收起来，界面上看不到、点不到。
+          这段 HTML 故意**没有删**：里面 15 个控件的 id 还被 panel.js 的 DSH 接线引用着
+          （删了 audit 的「面板引用不存在的 id」检查会红），也是将来恢复的现成模板。
+
+          它原来干什么：接本机的 DeepSeek Harness（`dsh --profile acp`），把「读文件 / 联网 /
+          整理成条目」这类慢活交给它跑，产出进「待审草稿」；还能在 DSH Web 里看她一步步干活。
+
+          为什么下线：① 使用率太低（主播自己的配置里 `knowledge.engine` 一直是 `builtin`，
+          `dshSessionId` 只有过一次值 —— 就是点「开始整理」试了一下）；
+          ② 它的主要用途「查资料」已经被「联网怎么查 → 自研搜索」顶掉了（实测 3 秒/0.010 元，
+          比 DSH 快一个数量级，还不用装任何东西）。
+
+          为什么只藏不删（主播选的方案）：DSH 那三个模块 + 55 个测试都在，真要恢复的话：
+          ① 去掉下面这行 `hidden`；② 把 main.js 里 `runResearchQuery` 里固定的 `engine = 'builtin'`
+          改回 `settings.knowledge.engine === 'dsh' ? 'dsh' : 'builtin'`；
+          ③ 把 audit 里那条「DSH 卡片必须是 hidden」的断言去掉。详见交接文档 §6.16。
+          ============================================================
+        -->
+        <div class="card" id="dshCard" hidden>
+          <div class="card-head">
+            <h2>让 DSH 整理（可选）</h2>
+            <span class="hint">读文件 / 联网 / 整理成条目 → 先进待审</span>
+          </div>
+          <div class="form">
+            <p class="tip">
+              <b>软件本身不带 DSH。</b>想用这个功能，你的电脑上要先有
+              <b>Node.js</b> 和 <b>@deepseek-ai/dsh</b>：命令行跑一次
+              <code>npm i -g @deepseek-ai/dsh</code>（装完重开本软件）。<br />
+              先点下面的「检测环境」，<b>检测通过才允许开始任务</b>。<br />
+              它干活的范围被限定在软件目录的「知识库」文件夹里（下面会写明具体路径），
+              所以它读不到你电脑上的其它东西。<br />
+              <b>会话模式会常驻一个 DSH 进程</b>：实测握手约 <b>4 秒</b>，之后每次整理不用再等它启动；
+              真正费时间的是它读文件、联网那部分，所以它仍然只适合收工后整理资料，
+              <b>绝不能插进直播回复里</b>。
+            </p>
+            <div class="actions">
+              <button class="btn primary" id="dshDetect">检测环境</button>
+              <button class="btn" id="dshDeepDetect">深度检测（真跑一次，约 1 分钟）</button>
+              <button class="btn" id="dshCancel" hidden>中止任务</button>
+              <span class="hint" id="dshStatusLine">还没检测过。</span>
+            </div>
+            <div id="dshChecks"></div>
+            <div class="grid-2">
+              <label class="field">
+                <span>怎么跑</span>
+                <label class="mini-check">
+                  <input type="radio" name="dshMode" id="dshModeSession" value="session" />开一个会话（能看见过程）
+                </label>
+                <label class="mini-check">
+                  <input type="radio" name="dshMode" id="dshModeHeadless" value="headless" />一次性跑完就退（安静）
+                </label>
+                <small>会话模式会常驻一个 DSH 进程，用一个<b>能续用的会话</b>干活（关掉软件再打开也接着用它）：你能在 DSH Web 的会话列表里打开它、看它一步步做、随时接手。</small>
+              </label>
+              <label class="field">
+                <span>会话名称（软件这边的标注）</span>
+                <input id="dshSessionName" type="text" placeholder="直播知识整理" />
+                <small id="dshSessionHint">会作为新会话第一句话的开头（DSH 拿它生成会话标题，你在 Web 里好认）。</small>
+              </label>
+            </div>
+            <div class="grid-2">
+              <label class="field">
+                <span>DSH 用哪个模型（会话模式）</span>
+                <input id="dshModel" type="text" placeholder="deepseek-flash" />
+                <small>
+                  默认 <code>deepseek-flash</code>（<b>DeepSeek-V41-Flash</b>，快而便宜）；软件会在会话上直接指定，
+                  不去改你 DSH 的配置。<b>留空 = 不指定</b>，用 DSH 自己的默认。
+                  一次性模式没有这个能力（那条路吃 DSH 自己的默认模型）。
+                </small>
+              </label>
+              <label class="field">
+                <span>超时（秒）</span>
+                <input id="dshTimeoutSec" type="number" min="30" max="1800" step="30" />
+                <small>超过就收尾并告诉你「它没被杀、还在会话里跑」。</small>
+              </label>
+            </div>
+            <div class="grid-2">
+              <label class="field">
+                <span>Node 路径（留空 = 用 PATH 上的 node）</span>
+                <input id="dshNode" type="text" placeholder="C:\Program Files\nodejs\node.exe" />
+                <small>只有自动找不到 Node 时才需要填。</small>
+              </label>
+              <label class="field">
+                <span>DSH 路径（留空 = 自动找）</span>
+                <input id="dshCommand" type="text" placeholder="…\@deepseek-ai\dsh\lib\bin.js" />
+                <small>会自动找全局 npm 与 npx 缓存；找不到再填这里，指到 <code>lib/bin.js</code>。</small>
+              </label>
+            </div>
+            <div class="field">
+              <span>工作区（DSH 被限定在这里读写）</span>
+              <div class="stack">
+                <code id="dshWorkspacePath">正在读取…</code>
+                <button class="btn tiny" id="dshOpenWorkspace">打开文件夹</button>
+              </div>
+              <small id="dshWorkspaceHint">
+                选了 DSH 之后，它的会话工作区就限定在软件目录的「知识库」文件夹里：<b>它只能在这个文件夹里读写文件</b>，
+                越界的读写会被 DSH 自己的沙箱拒绝（不是只靠界面提醒）。要整理的资料也放这儿。
+              </small>
+            </div>
+            <label class="field">
+              <span>让它做什么</span>
+              <textarea id="dshTask" rows="4" spellcheck="false" placeholder="例如：读一下 inbox 里的商品清单，整理成一条条知识，每条一个标题 + 一段正文。"></textarea>
+              <small>把要整理的文件丢进「知识库」的 <code>inbox\</code>，再让它读；它也能直接看 <code>notes\</code> 里已有的条目。</small>
+            </label>
+            <div class="actions">
+              <button class="btn primary" id="dshRun" disabled>开始整理</button>
+              <span class="hint" id="dshRunHint">先点「检测环境」。</span>
+            </div>
+            <pre class="tip" id="dshOutput" hidden></pre>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>联网怎么查</h2>
+            <span class="hint">点「去查」时走哪条路，随时能换</span>
+          </div>
+          <div class="form">
+            <p class="tip">
+              DeepSeek 在 2026-10-17 开放了<b>自研搜索接口</b>，从那以后「去查」有两条路可走，
+              <b>两条都保留着、随时能换</b>；查到的内容照样都先进「待审草稿」，你点通过才进知识库：<br />
+              · <b>自研搜索</b>：先搜到结构化结果（带站点、日期、权威度、链接），再让她照着结果整理。
+              实测<b>不到 1 秒</b>出结果、整条约 <b>3 秒</b>，一次 <b>0.005 元</b>（整理那步只花几分钱 token）；<br />
+              · <b>模型联网</b>（老办法）：模型自己翻搜索结果一边搜一边写。实测 <b>6~15 秒</b>、
+              一次约 <b>0.03 元</b>（2026-11-01 起服务端搜索另按每次 0.005 元计费）。
+            </p>
+            <div class="stack">
+              <label class="row-check">
+                <input type="radio" name="searchMode" id="searchModeSelf" value="self" />
+                <span><b>自研搜索接口</b>：快、便宜，每条结果带来源和日期（默认）</span>
+              </label>
+              <label class="row-check">
+                <input type="radio" name="searchMode" id="searchModeModel" value="model" />
+                <span><b>模型联网（老办法）</b>：模型自己翻搜索结果写，慢一点、贵一点</span>
+              </label>
+            </div>
+            <div class="hint" id="searchModeLine">自研搜索失败会自动退回老办法，所以选哪个都不会「查不动」。</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>模型想查 / 想记</h2>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="researchReload">重新读取</button>
+              <button class="btn tiny" id="researchClear">清空已处理</button>
+            </div>
+          </div>
+          <div class="form">
+            <p class="tip">
+              直播中它发现<b>值得记下来的东西</b>（新游戏、新梗、新品、能用来回答观众的事实）时，
+              会在回复里藏一个标记——<b>观众看不到</b>，只在这里排队。
+              <b>「去查」默认要你点头</b>（联网花钱这件事不替你做主；在「DeepSeek API」页打开<b>「最高权限」</b>后她才自己查）；
+              「记 / 改 / 扩写 / 删」按下面「她自己动库的权限」走——默认她直接动手，但每次改动都留备份、能撤销。
+            </p>
+            <div class="hint" id="researchHint">还没读到。</div>
+            <div id="researchList"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>她自己动库的权限</h2>
+            <span class="hint" id="selfEditHint">她改错 / 扩写 / 记新的，都会先备份旧版本，这里能一键撤销。</span>
+          </div>
+          <div class="form">
+            <div class="grid2">
+              <label class="field">
+                <span>发现写错 / 想补内容时</span>
+                <select id="selfEdit">
+                  <option value="auto">直接改（改完告诉你改了哪条）</option>
+                  <option value="ask">先问我一句，我回「改」她才改</option>
+                  <option value="off">不自动改：只挂在下面的待办里等我点</option>
+                </select>
+                <small>不管哪一档，改之前都会把旧版本备份到「知识库\.history\」，面板上也能一键撤销。</small>
+              </label>
+              <label class="field">
+                <span>一小时最多自动动几次库</span>
+                <input type="number" id="selfEditPerHour" min="0" max="200" step="1" />
+                <small>0 = 不限。到顶之后她只把待办挂起来，等你在下面点。</small>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>知识库改动记录</h2>
+            <span class="hint" id="editsSummary">最近 0 次改动</span>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="editsToggle">展开</button>
+              <button class="btn tiny" id="editsReload">重新读取</button>
+            </div>
+          </div>
+          <div class="form" id="editsBody" hidden>
+            <p class="tip">
+              她自动改的、你自己改的、删掉的条目都在这里排着。<b>任何一条都能一键撤销</b>：
+              改过的会回到改动前的原文，她新建的会整条删掉，删掉的会按备份恢复。
+            </p>
+            <div class="hint" id="editsHint">还没读到。</div>
+            <div id="editsList"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>整理与校对</h2>
+            <span class="hint" id="reviewHint">让模型用最高思考档检查已有知识：找重复 / 过时的，联网核对写错的。</span>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="reviewAudit">整理全库</button>
+              <button class="btn tiny" id="reviewVerify">联网校对选中的</button>
+              <button class="btn tiny" id="reviewCancel" hidden>取消</button>
+              <button class="btn tiny" id="reviewClear" hidden>清空建议</button>
+            </div>
+          </div>
+          <div class="form" id="reviewBody">
+            <p class="tip">
+              模型只<b>出建议</b>，你点「应用」才真的改库（改前自动备份到
+              <code>知识库\.history\</code>，在「知识库改动记录」里能一键撤销）。<br />
+              <b>整理全库</b>：只看标题、标签和正文摘要，一次调用，找重复 / 冲突 / 过时 / 太长太散，几分钱；
+              用的是<b>最高思考档</b>，可能要 <b>1~2 分钟</b>（别关面板，跑的时候能看到进度）。<br />
+              <b>联网校对</b>：每条都联网查一次再核对（最高思考档），逐条串行，
+              每条约 <b>10~30 秒</b>、约 0.01~0.03 元；在下面「全部条目」里勾选要查的，不勾就按「最久没更新」优先。<br />
+              <b>锁定</b>：把一条知识设成只读（条目行上的 🔒），模型既不能改也不能删，但<b>照常参与回复检索</b>。
+            </p>
+            <div class="grid-3">
+              <label class="field">
+                <span>一次联网校对几条</span>
+                <input id="reviewLimit" type="number" min="1" max="20" step="1" />
+                <small>不勾选条目时就按「最久没更新」优先跑这几条；每条约 10~30 秒、约 0.01~0.03 元。</small>
+              </label>
+            </div>
+            <div class="hint" id="reviewSummary">还没跑过。</div>
+            <div class="hint" id="reviewProgress" hidden></div>
+            <div id="reviewList"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>待审草稿</h2>
+            <span class="hint" id="pendingHint">整理出来的内容先出现在这里，点「通过」才真正进知识库。</span>
+            <div class="card-head-actions">
+              <button class="btn tiny primary" id="pendingApproveAll">全部通过</button>
+              <button class="btn tiny danger-ghost" id="pendingClear">清空待审</button>
+              <button class="btn tiny" id="pendingToggle">收起</button>
+            </div>
+          </div>
+          <div class="form" id="pendingBody">
+            <div id="pendingList"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>全部条目</h2>
+            <span class="hint" id="knowledgeListHint"></span>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="entriesSelectAll">全选</button>
+              <button class="btn tiny" id="entriesSelectNone">清空选择</button>
+              <button class="btn tiny" id="entriesToggle">收起</button>
+            </div>
+          </div>
+          <div class="form" id="entriesBody">
+            <div id="knowledgeList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 运行日志 ================= -->
+      <section class="panel" id="tab-logs">
+        <div class="card">
+          <div class="card-head">
+            <h2>用量与费用（估算）</h2>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="exportHistory">导出对话记录</button>
+              <button class="btn tiny" id="resetUsageToday">清空今日</button>
+              <button class="btn tiny danger-ghost" id="resetUsageAll">清空全部</button>
+            </div>
+          </div>
+          <div class="usage-grid">
+            <div class="usage-item">
+              <div class="usage-label">今日调用</div>
+              <div class="usage-value" id="usageTodayCalls">0</div>
+              <div class="usage-sub" id="usageTodayTokens">0 tokens</div>
+            </div>
+            <div class="usage-item highlight">
+              <div class="usage-label">今日费用</div>
+              <div class="usage-value" id="usageTodayCost">￥0</div>
+              <div class="usage-sub">按内置价目估算</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-label">累计费用</div>
+              <div class="usage-value" id="usageTotalCost">￥0</div>
+              <div class="usage-sub" id="usageTotalDays">0 天</div>
+            </div>
+            <div class="usage-item">
+              <div class="usage-label">本次运行</div>
+              <div class="usage-value" id="usageSessionCalls">0 次</div>
+              <div class="usage-sub" id="usageSessionCost">￥0</div>
+            </div>
+          </div>
+          <p class="tip" id="usageHint">
+            费用是按 DeepSeek 公开价目估算的，仅作参考。统计文件在 <code>data/usage.json</code>。
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>运行日志</h2>
+            <div class="card-head-actions">
+              <select id="logLevel" class="tiny-select">
+                <option value="all">全部</option>
+                <option value="info">信息以上</option>
+                <option value="warn">警告以上</option>
+                <option value="error">只看错误</option>
+              </select>
+              <button class="btn tiny" id="openLogFile">打开日志文件</button>
+              <button class="btn tiny" id="clearLogs">清空</button>
+            </div>
+          </div>
+          <div class="log-list" id="logList"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>数据存放位置</h2></div>
+          <div class="form">
+            <p class="tip" id="dataFolder">配置和日志保存在程序目录下的 data 文件夹。</p>
+            <div class="actions">
+              <button class="btn" id="openDataFolder">打开数据文件夹</button>
+              <button class="btn danger-ghost" id="resetSettings">恢复出厂设置</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 应用内确认框：**不要**用系统原生 confirm/prompt。
+         原生弹窗在 Electron/Windows 上关掉之后，渲染层会出现「点不动、打不了字」的状态
+         （主播报过：知识库删一条之后整个页面的输入框都不能选不能打字）。 -->
+    <div class="modal-mask" id="modalMask" hidden>
+      <div class="modal-box" role="dialog" aria-modal="true">
+        <p class="modal-text" id="modalText"></p>
+        <input class="modal-input" id="modalInput" type="text" hidden />
+        <div class="actions">
+          <button class="btn primary" id="modalOk" type="button">确定</button>
+          <button class="btn" id="modalCancel" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast-wrap" id="toastWrap"></div>
+    <script src="../../shared/emotions.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>
