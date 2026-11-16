@@ -241,6 +241,91 @@
             </div>
           </div>
         </div>
+
+        <!-- 主动搭话（2026-10-21 替换原来的「冷场暖场」）：时机 / 频率 / 方式全都是开关，规矩写进提示词 -->
+        <div class="card">
+          <div class="card-head">
+            <h2>主动搭话</h2>
+            <span class="hint" id="proactiveHint">冷场时让她自己开口（默认关）</span>
+            <div class="card-head-actions">
+              <button class="btn tiny" id="proactiveNow">让她现在搭一句</button>
+            </div>
+          </div>
+          <div class="form">
+            <p class="tip">
+              安静太久的时候由她自己说一句，走的是正常回复链路（悬浮窗、对话区、语音朗读都照旧）。<br />
+              <b>什么时候说</b>、<b>说多少</b>、<b>用哪种方式</b>是下面这些开关；<b>说什么风格、有什么规矩</b>
+              写在最下面的「搭话规矩」里，会原样拼进每一次搭话的提示词。
+            </p>
+            <label class="row-check">
+              <input id="proactiveEnabled" type="checkbox" />
+              <span>开启主动搭话（关着就完全不主动开口）</span>
+            </label>
+            <div class="grid-3">
+              <label class="field">
+                <span>安静多少秒后搭话</span>
+                <input id="proactiveIdleSeconds" type="number" min="30" max="1800" step="10" />
+                <small>收到弹幕会重新计时；只说一句，不会连发。</small>
+              </label>
+              <label class="field">
+                <span>每小时最多几次</span>
+                <input id="proactiveMaxPerHour" type="number" min="0" max="60" step="1" />
+                <small>0 = 不限。别设太大，整场自言自语观众会烦。</small>
+              </label>
+              <label class="field">
+                <span>每次冷场真开口的概率</span>
+                <div class="inline">
+                  <input id="proactiveChance" type="range" min="0" max="100" step="5" />
+                  <output id="proactiveChanceOut"></output>
+                </div>
+                <small>100% 就是每次冷场都说；低一点更像真人，不会掐着表说话。</small>
+              </label>
+            </div>
+            <div class="grid-3">
+              <label class="field">
+                <span>一句话最多几个字</span>
+                <input id="proactiveMaxChars" type="number" min="20" max="120" step="5" />
+                <small>超太长的按这条不发。</small>
+              </label>
+              <label class="field">
+                <span>允许的搭话方式</span>
+                <div class="stack">
+                  <label class="row-check">
+                    <input id="proactiveModeTopic" type="checkbox" />
+                    <span>开话题（可以拿知识库当谈资）</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="proactiveModeAsk" type="checkbox" />
+                    <span>问观众一个容易回答的小问题</span>
+                  </label>
+                  <label class="row-check">
+                    <input id="proactiveModeFollow" type="checkbox" />
+                    <span>接住刚才没人接的话头</span>
+                  </label>
+                </div>
+                <small>三种都关 = 不会主动搭话（等同关闭）。</small>
+              </label>
+              <label class="field">
+                <span>其他</span>
+                <div class="stack">
+                  <label class="row-check">
+                    <input id="proactiveUseKnowledge" type="checkbox" />
+                    <span>允许从知识库挑「可以聊的料」</span>
+                  </label>
+                </div>
+                <small>关掉也能搭话，只是不会拿知识库里的东西当谈资。</small>
+              </label>
+            </div>
+            <label class="field">
+              <span>搭话规矩（会原样写进提示词，想加什么都能写）</span>
+              <textarea id="proactivePrompt" rows="3"></textarea>
+              <small>
+                例如：「别问观众隐私」「聊游戏的时候顺着聊，别硬切话题」「觉得现在不该说话就只回 [跳过]」。
+                她如果判断现在不该开口，会只回 <code>[跳过]</code>，这条就不发、也不计入次数。
+              </small>
+            </label>
+          </div>
+        </div>
       </section>
 
       <!-- ================= DeepSeek API ================= -->
@@ -361,91 +446,7 @@
           </div>
         </div>
 
-        <!-- 主动搭话（2026-10-21 替换原来的「冷场暖场」）：时机 / 频率 / 方式全都是开关，规矩写进提示词 -->
-        <div class="card">
-          <div class="card-head">
-            <h2>主动搭话</h2>
-            <span class="hint" id="proactiveHint">冷场时让她自己开口（默认关）</span>
-            <div class="card-head-actions">
-              <button class="btn tiny" id="proactiveNow">让她现在搭一句</button>
-            </div>
-          </div>
-          <div class="form">
-            <p class="tip">
-              安静太久的时候由她自己说一句，走的是正常回复链路（悬浮窗、对话区、语音朗读都照旧）。<br />
-              <b>什么时候说</b>、<b>说多少</b>、<b>用哪种方式</b>是下面这些开关；<b>说什么风格、有什么规矩</b>
-              写在最下面的「搭话规矩」里，会原样拼进每一次搭话的提示词。
-            </p>
-            <label class="row-check">
-              <input id="proactiveEnabled" type="checkbox" />
-              <span>开启主动搭话（关着就完全不主动开口）</span>
-            </label>
-            <div class="grid-3">
-              <label class="field">
-                <span>安静多少秒后搭话</span>
-                <input id="proactiveIdleSeconds" type="number" min="30" max="1800" step="10" />
-                <small>收到弹幕会重新计时；只说一句，不会连发。</small>
-              </label>
-              <label class="field">
-                <span>每小时最多几次</span>
-                <input id="proactiveMaxPerHour" type="number" min="0" max="60" step="1" />
-                <small>0 = 不限。别设太大，整场自言自语观众会烦。</small>
-              </label>
-              <label class="field">
-                <span>每次冷场真开口的概率</span>
-                <div class="inline">
-                  <input id="proactiveChance" type="range" min="0" max="100" step="5" />
-                  <output id="proactiveChanceOut"></output>
-                </div>
-                <small>100% 就是每次冷场都说；低一点更像真人，不会掐着表说话。</small>
-              </label>
-            </div>
-            <div class="grid-3">
-              <label class="field">
-                <span>一句话最多几个字</span>
-                <input id="proactiveMaxChars" type="number" min="20" max="120" step="5" />
-                <small>超太长的按这条不发。</small>
-              </label>
-              <label class="field">
-                <span>允许的搭话方式</span>
-                <div class="stack">
-                  <label class="row-check">
-                    <input id="proactiveModeTopic" type="checkbox" />
-                    <span>开话题（可以拿知识库当谈资）</span>
-                  </label>
-                  <label class="row-check">
-                    <input id="proactiveModeAsk" type="checkbox" />
-                    <span>问观众一个容易回答的小问题</span>
-                  </label>
-                  <label class="row-check">
-                    <input id="proactiveModeFollow" type="checkbox" />
-                    <span>接住刚才没人接的话头</span>
-                  </label>
-                </div>
-                <small>三种都关 = 不会主动搭话（等同关闭）。</small>
-              </label>
-              <label class="field">
-                <span>其他</span>
-                <div class="stack">
-                  <label class="row-check">
-                    <input id="proactiveUseKnowledge" type="checkbox" />
-                    <span>允许从知识库挑「可以聊的料」</span>
-                  </label>
-                </div>
-                <small>关掉也能搭话，只是不会拿知识库里的东西当谈资。</small>
-              </label>
-            </div>
-            <label class="field">
-              <span>搭话规矩（会原样写进提示词，想加什么都能写）</span>
-              <textarea id="proactivePrompt" rows="3"></textarea>
-              <small>
-                例如：「别问观众隐私」「聊游戏的时候顺着聊，别硬切话题」「觉得现在不该说话就只回 [跳过]」。
-                她如果判断现在不该开口，会只回 <code>[跳过]</code>，这条就不发、也不计入次数。
-              </small>
-            </label>
-          </div>
-        </div>
-      </section>
+              </section>
 
       <!-- ================= 语音 ================= -->
       <section class="panel" id="tab-speech">

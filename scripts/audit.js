@@ -1707,7 +1707,7 @@ function checkPersonaTab() {
   if (personaAt > apiAt) problems.push('「人设」页应该在 API 页前面');
   const personaBlock = personaAt >= 0 && apiAt > personaAt ? html.slice(personaAt, apiAt) : '';
   const apiBlock = apiAt >= 0 ? html.slice(apiAt, html.indexOf('id="tab-speech"')) : '';
-  for (const id of ['roleSelect', 'botName', 'systemPrompt', 'styleNotes', 'contextRounds', 'memoryMinutes', 'anchorName']) {
+  for (const id of ['roleSelect', 'botName', 'systemPrompt', 'styleNotes', 'contextRounds', 'memoryMinutes', 'anchorName', 'proactiveEnabled', 'proactivePrompt']) {
     if (!personaBlock.includes(`id="${id}"`)) problems.push(`人设页缺少 #${id}`);
     if (apiBlock.includes(`id="${id}"`)) problems.push(`#${id} 还留在 API 页`);
   }

@@ -3225,7 +3225,7 @@ test('人设页：角色 / 人设 / 上下文单独成页，API 页只留接口�
     }
     return false;
   };
-  for (const id of ['roleSelect', 'botName', 'systemPrompt', 'contextRounds', 'anchorName']) {
+  for (const id of ['roleSelect', 'botName', 'systemPrompt', 'contextRounds', 'anchorName', 'proactiveEnabled', 'proactivePrompt']) {
     if (!dom.nodes.get(id)) throw new Error(`缺少控件 #${id}`);
     if (!inSection(id, personaSection)) throw new Error(`#${id} 应该在「人设」页`);
     if (inSection(id, apiSection)) throw new Error(`#${id} 还留在「DeepSeek API」页`);
