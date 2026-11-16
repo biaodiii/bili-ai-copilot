@@ -1388,6 +1388,21 @@ function checkPackaging() {
   if (!/seedBundledMascot\(\)/.test(main)) problems.push('main.js 没调用 seedBundledMascot()（装上就没有默认吉祥物）');
   if (!/bundledSeeded/.test(main)) problems.push('main.js 没有「内置素材只种一次」的标记（删掉的图会长回来）');
   if (!/copyDir\(mascotSrc/.test(build)) problems.push('build-release.js 没把 默认素材图片 复制进发布包');
+  // 7) 固定发布目录 + 保留用户数据 + 升级包（2026-11-16 修「覆盖丢配置」）
+  if (!/const outDir = path\.join\(outRoot, `\$\{product\}-win64`\)/.test(build)) {
+    problems.push('发布目录不是固定名 直播AI搭档-win64（带版本号会让用户覆盖时丢配置）');
+  }
+  if (/fs\.rmSync\(outDir, \{ recursive: true, force: true \}\)/.test(build)) {
+    problems.push('build-release.js 还在整个删除 outDir（会把用户的 data/知识库 一起删掉）');
+  }
+  if (!/USER_DIRS\.has\(entry\.name\)/.test(build)) {
+    problems.push('构建同步时没有跳过 data/知识库（覆盖升级会清掉用户配置）');
+  }
+  if (!/--clean/.test(build) || !/cleanData/.test(build)) {
+    problems.push('没有 --clean 开关（想恢复出厂时没法清数据）');
+  }
+  if (!/升级包/.test(build)) problems.push('没有生成升级包（只含程序文件、不含数据）');
+  if (!/tar\.exe/.test(build)) problems.push('升级包没用 tar.exe 打（条目分隔符可能不标准）');
   let mascotFiles = [];
   try {
     mascotFiles = fs

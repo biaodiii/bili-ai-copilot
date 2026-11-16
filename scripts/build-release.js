@@ -1,15 +1,22 @@
 'use strict';
 
 /**
- * 打「发布 / 分享版」——便携文件夹形态（2026-10-21）。
+ * 打「发布 / 分享版」——便携文件夹形态（2026-10-21；2026-11-16 改成固定目录）。
  *
- *   node scripts/build-release.js                 # 默认输出到 <项目上一级>\发布包\直播AI搭档-<版本>-win64
+ *   node scripts/build-release.js                 # 输出到 <项目上一级>\发布包\直播AI搭档-win64
  *   node scripts/build-release.js --out E:\发布     # 换输出位置
+ *   node scripts/build-release.js --clean         # 连 data / 知识库 一起清空（恢复出厂）
  *   node scripts/build-release.js --skip-audit    # 跳过静态审计（不推荐）
  *   node scripts/build-release.js --no-smoke      # 跳过产物冒烟验证（不推荐）
  *
  * ⚠️ 产物**默认不放项目文件夹里**（主播 2026-10-21 要求）：几百 MB 的东西混在源码目录里，
  *    备份/同步/看代码都碍事。默认丢到项目上一层的 `发布包\`，想换位置用 `--out`。
+ *
+ * ⚠️ **目录名不再带版本号**（2026-11-16 主播反馈「覆盖新版后 API Key / 人设丢了」）：
+ *    以前产物叫 `直播AI搭档-0.2.0-win64`，换版本就是一个新文件夹；用户"覆盖"时
+ *    要么新开一个目录（旧配置留在旧目录）、要么删旧目录重建 → 配置全丢。
+ *    现在固定输出 `直播AI搭档-win64`，而且**构建只替换程序文件、保留 data/知识库**；
+ *    另出一个「升级包.zip」（只含程序文件），解压到旧文件夹覆盖即可。
  *
  * 为什么不用 electron-builder：这个项目只有一个运行时依赖（ws），Electron 运行时本来就在
  * node_modules/electron/dist 里躺着了。直接复用它 = **不装额外工具、不联网、不签名**，
@@ -18,13 +25,15 @@
  *
  * 产物长这样（数据在 exe 旁边，拷走整个文件夹就带走全部配置和笔记）：
  *
- *   直播AI搭档-0.2.0-win64/
- *     直播AI搭档.exe          ← 由 electron.exe 改名
+ *   直播AI搭档-win64/            ← 固定目录：以后覆盖同一个目录，配置不会丢
+ *     直播AI搭档.exe            ← 由 electron.exe 改名
  *     使用说明.txt
- *     data/                   ← 空目录；配置/日志/观众记忆第一次启动后落这里
- *     知识库/                  ← 空目录；首次启动自动建 notes/pending/inbox
- *     resources/app/          ← 我们的源码 + ws
- *     locales/                ← 只留中文/英文（省约 38MB）
+ *     data/                     ← 你的配置/日志/观众记忆/语音存档（构建不碰）
+ *     知识库/                    ← 你的知识笔记（构建不碰）
+ *     resources/app/            ← 我们的源码 + ws
+ *     locales/                  ← 只留中文/英文（省约 38MB）
+ *
+ *   直播AI搭档-0.2.0-升级包.zip  ← 只含程序文件（没有 data/知识库），解压覆盖用
  *
  * 三条硬性要求（发错一条就泄露主播隐私）：
  *   1. **绝不**打包真实的 `data/`、`知识库/`、`data/观众记忆/`；
@@ -51,13 +60,21 @@ function argValue(flag) {
 
 // 默认输出到项目**上一级**的 发布包\：产物不进项目目录（主播 2026-10-21 要求）
 const outRoot = path.resolve(argValue('--out') || path.join(root, '..', '发布包'));
-const outDir = path.join(outRoot, `${product}-${version}-win64`);
+/** 固定发布目录（2026-11-16）：**不带版本号**，覆盖同一目录时 data 不会被换走 */
+const outDir = path.join(outRoot, `${product}-win64`);
+/** 构建先落在临时目录：验证通过后再同步，失败也不会碰用户的 data/知识库 */
+const stageDir = path.join(outRoot, `._build-${process.pid}`);
+/** 升级包：只含程序文件，不含 data/知识库；解压到旧文件夹覆盖即可 */
+const updateZip = path.join(outRoot, `${product}-${version}-升级包.zip`);
+const cleanData = process.argv.includes('--clean');
 const skipAudit = process.argv.includes('--skip-audit');
 const skipSmoke = process.argv.includes('--no-smoke');
 
 const SKIP_NAMES = new Set(['Thumbs.db', 'desktop.ini', '.DS_Store']);
 /** 只留这两个语言包：全部 locales 有 40MB，中文用户用不到其他语言 */
 const KEEP_LOCALES = ['zh-CN.pak', 'en-US.pak'];
+/** 这两个目录属于用户，构建时永远保留（除非 --clean） */
+const USER_DIRS = new Set(['data', '知识库']);
 
 let step = 0;
 const startedAt = Date.now();
@@ -129,6 +146,13 @@ function copyDir(from, to, filter) {
   }
 }
 
+/** 复制「一个顶层条目」（文件或目录） */
+function copyEntry(from, to) {
+  const stat = fs.statSync(from);
+  if (stat.isDirectory()) copyDir(from, to);
+  else copyFile(from, to);
+}
+
 function writeText(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // Node 的 writeFileSync 默认就是无 BOM 的 UTF-8；这里显式写成 CRLF，老记事本也能正常看
@@ -149,11 +173,12 @@ assert(fs.existsSync(path.join(electronDist, 'electron.exe')), `没找到 Electr
 const wsDir = path.join(root, 'node_modules', 'ws');
 assert(fs.existsSync(path.join(wsDir, 'index.js')), '没找到 ws 依赖（node_modules/ws）；先 npm install');
 
-// 只允许删「看起来就是我们自己产物」的目录，防止 --out 写错把别人的东西删了
-const safeToDelete = outDir.includes(`${product}-`) && path.basename(outDir).endsWith('-win64');
-assert(safeToDelete, `输出目录名不对劲，拒绝删除：${outDir}`);
+// 只允许动「看起来就是我们自己产物」的目录，防止 --out 写错把别人的东西删了
+assert(path.basename(outDir) === `${product}-win64`, `发布目录名不对劲，拒绝写入：${outDir}`);
+assert(path.dirname(stageDir) === outRoot, `临时构建目录不对劲，拒绝写入：${stageDir}`);
 log(`产品：${product}  版本：${version}`);
-log(`输出：${outDir}`);
+log(`发布目录：${outDir}（固定目录，覆盖不丢 data / 知识库）`);
+log(`临时构建：${stageDir}`);
 log(`Electron：${electronDist}`);
 
 // ---------------------------------------------------------------- 1. 静态审计
@@ -169,14 +194,17 @@ if (skipAudit) {
   assert(result.status === 0, '静态审计没过，先修好再打包（--skip-audit 可以跳过，但别习惯性跳过）');
 }
 
-// ---------------------------------------------------------------- 2. 准备空目录
+// ---------------------------------------------------------------- 2. 准备临时构建目录
+//
+// 为什么先构建到临时目录：同步到固定目录时只替换程序文件、保留 data/知识库；
+// 万一审计/冒烟/压缩失败，用户正在用的目录一个字节都不会被碰。
 
-stepLog('准备输出目录');
-if (fs.existsSync(outDir)) {
-  fs.rmSync(outDir, { recursive: true, force: true });
-  log(`已清掉旧的 ${path.basename(outDir)}`);
+stepLog('准备临时构建目录');
+if (fs.existsSync(stageDir)) {
+  fs.rmSync(stageDir, { recursive: true, force: true });
+  log(`已清掉上次残留的 ${path.basename(stageDir)}`);
 }
-fs.mkdirSync(outDir, { recursive: true });
+fs.mkdirSync(stageDir, { recursive: true });
 
 // ---------------------------------------------------------------- 3. 复制 Electron 运行时
 
@@ -184,25 +212,25 @@ stepLog('复制 Electron 运行时');
 for (const entry of fs.readdirSync(electronDist, { withFileTypes: true })) {
   if (SKIP_NAMES.has(entry.name)) continue;
   if (entry.isDirectory()) continue; // locales / resources 单独处理
-  copyFile(path.join(electronDist, entry.name), path.join(outDir, entry.name));
+  copyFile(path.join(electronDist, entry.name), path.join(stageDir, entry.name));
 }
 const localesDir = path.join(electronDist, 'locales');
 if (fs.existsSync(localesDir)) {
-  fs.mkdirSync(path.join(outDir, 'locales'), { recursive: true });
+  fs.mkdirSync(path.join(stageDir, 'locales'), { recursive: true });
   for (const name of KEEP_LOCALES) {
     const file = path.join(localesDir, name);
-    if (fs.existsSync(file)) copyFile(file, path.join(outDir, 'locales', name));
+    if (fs.existsSync(file)) copyFile(file, path.join(stageDir, 'locales', name));
   }
 }
 // electron 自带的 default_app.asar 是「没有 app 时」的兜底，进产物毫无意义
-const defaultApp = path.join(outDir, 'resources', 'default_app.asar');
+const defaultApp = path.join(stageDir, 'resources', 'default_app.asar');
 if (fs.existsSync(defaultApp)) fs.rmSync(defaultApp, { force: true });
-log(`运行时文件：${fs.readdirSync(outDir).filter((n) => fs.statSync(path.join(outDir, n)).isFile()).length} 个（已裁掉多余语言包）`);
+log(`运行时文件：${fs.readdirSync(stageDir).filter((n) => fs.statSync(path.join(stageDir, n)).isFile()).length} 个（已裁掉多余语言包）`);
 
 // ---------------------------------------------------------------- 4. 复制应用源码
 
 stepLog('复制应用源码');
-const appDir = path.join(outDir, 'resources', 'app');
+const appDir = path.join(stageDir, 'resources', 'app');
 fs.mkdirSync(appDir, { recursive: true });
 
 // package.json 重新生成：去掉 devDependencies / scripts，只留运行时需要的
@@ -224,21 +252,21 @@ copyDir(wsDir, path.join(appDir, 'node_modules', 'ws'));
 // 程序第一次启动会把它们导进设置当默认吉祥物（main.js 的 seedBundledMascot）。
 const mascotSrc = path.join(root, '默认素材图片');
 if (fs.existsSync(mascotSrc)) {
-  copyDir(mascotSrc, path.join(outDir, '默认素材图片'));
-  const mascotFiles = walk(path.join(outDir, '默认素材图片')).length;
+  copyDir(mascotSrc, path.join(stageDir, '默认素材图片'));
+  const mascotFiles = walk(path.join(stageDir, '默认素材图片')).length;
   log(`默认吉祥物素材：${mascotFiles} 个文件（第一次启动自动导入）`);
 } else {
   log('[!] 没找到 默认素材图片\\：这个包不会有内置吉祥物（用户得自己导入）');
 }
 
-// 空的数据目录（真实 data / 知识库 绝不复制——那是主播的配置和笔记）
-fs.mkdirSync(path.join(outDir, 'data'), { recursive: true });
-fs.mkdirSync(path.join(outDir, '知识库'), { recursive: true });
+// 空的 data / 知识库：这里只是给第一次安装的人建目录，同步时不会覆盖旧目录里的内容
+fs.mkdirSync(path.join(stageDir, 'data'), { recursive: true });
+fs.mkdirSync(path.join(stageDir, '知识库'), { recursive: true });
 
 // electron.exe → 直播AI搭档.exe
-const originalExe = path.join(outDir, 'electron.exe');
+const originalExe = path.join(stageDir, 'electron.exe');
 assert(fs.existsSync(originalExe), 'electron.exe 没复制过来？');
-fs.renameSync(originalExe, path.join(outDir, exeName));
+fs.renameSync(originalExe, path.join(stageDir, exeName));
 log(`可执行文件：${exeName}（由 electron.exe 改名）`);
 
 const srcFiles = walk(path.join(appDir, 'src')).length;
@@ -287,15 +315,24 @@ const guide = `直播AI搭档 ${version} · 使用说明
      然后把 data\\smoke-test.log 发出来。
   3. 想恢复出厂：关掉软件，删掉 data 文件夹（知识库别删），再打开会自动重建默认配置。
 
-六、怎么更新到新版本
-  拿新版本里的 ${exeName}、resources\\、locales\\ 覆盖进来，
-  **保留你自己的 data\\ 和 知识库\\**，配置和笔记都不会丢。
+六、怎么更新到新版本（不会丢配置）
+  从 0.2.0 起，发布目录名固定为「${product}-win64」，不再随版本号变化。
+
+  方式一（推荐）：把新版本里的 ${exeName}、resources\\、locales\\、默认素材图片\\、
+                  使用说明.txt 复制进本文件夹，覆盖同名文件。
+  方式二：把新版本附带的「${product}-<版本>-升级包.zip」解压到本文件夹，覆盖同名文件。
+
+  **无论哪种方式，都不要删本文件夹里的 data\\ 和 知识库\\**——
+  你的 API Key、人设、音色、观众记忆、知识笔记全在里面。
+
+  如果你现在用的还是旧版带版本号的文件夹（例如 ${product}-0.1.0-win64）：
+  第一次升级时，把旧文件夹里的 data\\ 和 知识库\\ 整个复制到新文件夹，再启动新程序。
 
 七、安全提醒
   API Key 目前以明文保存在 data\\settings.json（只在本机使用）。
   不要把 data 文件夹、截图里的 Key、或者整个软件文件夹随便发给别人。
 `;
-writeText(path.join(outDir, '使用说明.txt'), guide);
+writeText(path.join(stageDir, '使用说明.txt'), guide);
 
 // ---------------------------------------------------------------- 6. 隐私扫描
 
@@ -315,7 +352,7 @@ try {
 }
 const TEXT_EXT = new Set(['.js', '.json', '.md', '.txt', '.html', '.css', '.mjs', '.yml', '.yaml', '.ini', '.bat', '.ps1']);
 const leaks = [];
-for (const file of walk(outDir)) {
+for (const file of walk(stageDir)) {
   if (!TEXT_EXT.has(path.extname(file).toLowerCase())) continue;
   let text = '';
   try {
@@ -324,12 +361,12 @@ for (const file of walk(outDir)) {
     continue;
   }
   for (const secret of secrets) {
-    if (text.includes(secret.value)) leaks.push(`${secret.label} → ${path.relative(outDir, file)}`);
+    if (text.includes(secret.value)) leaks.push(`${secret.label} → ${path.relative(stageDir, file)}`);
   }
 }
 if (secrets.length === 0) log('真实配置里没有可扫描的密钥（或读不到），本次只做了空包检查');
 if (leaks.length) fail(`产物里发现了主播的私人密钥，绝不能再分享：\n  ${leaks.join('\n  ')}`);
-log(`扫描了 ${walk(outDir).length} 个文件，没有发现真实 Key / Cookie`);
+log(`扫描了 ${walk(stageDir).length} 个文件，没有发现真实 Key / Cookie`);
 
 // ---------------------------------------------------------------- 7. 冒烟验证
 
@@ -337,7 +374,7 @@ if (skipSmoke) {
   log('\n[!] 已跳过产物冒烟验证（--no-smoke）——不推荐：等于没验证过这个包能起来');
 } else {
   stepLog('冒烟验证（真跑一遍产物自己的 --smoke-test）');
-  const exePath = path.join(outDir, exeName);
+  const exePath = path.join(stageDir, exeName);
   /**
    * ⚠️ 必须清掉 `ELECTRON_RUN_AS_NODE`：
    * 从某些宿主环境（例如 Electron 里起的终端 / 自检工具）跑打包时，这个变量会继承给子进程，
@@ -348,26 +385,26 @@ if (skipSmoke) {
   const smokeEnv = { ...process.env };
   delete smokeEnv.ELECTRON_RUN_AS_NODE;
   const result = spawnSync(exePath, ['--smoke-test'], {
-    cwd: outDir,
+    cwd: stageDir,
     stdio: 'inherit',
     timeout: 120000,
     windowsHide: true,
     env: smokeEnv
   });
-  assert(result.status === 0, `产物冒烟测试没过（退出码 ${result.status}）。看 ${path.join(outDir, 'data', 'smoke-test.log')}`);
-  const smokeLog = path.join(outDir, 'data', 'smoke-test.log');
+  assert(result.status === 0, `产物冒烟测试没过（退出码 ${result.status}）。看 ${path.join(stageDir, 'data', 'smoke-test.log')}`);
+  const smokeLog = path.join(stageDir, 'data', 'smoke-test.log');
   assert(fs.existsSync(smokeLog), '冒烟测试跑完却没有 smoke-test.log？');
   const smokeText = fs.readFileSync(smokeLog, 'utf8');
   assert(!smokeText.includes('[FAIL]'), `冒烟测试里有失败项：\n${smokeText.slice(-800)}`);
   log('产物能正常启动（--smoke-test 通过）');
 
-  // 冒烟在 data 里留下了日志/配置，清干净再发出去（仍然保留空的 data、知识库 目录）
+  // 冒烟在 data 里留下了日志/配置，清干净再进包（仍然保留空的 data、知识库 目录）
   const cleanDir = (dir) => {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(dir, { recursive: true });
   };
-  cleanDir(path.join(outDir, 'data'));
-  cleanDir(path.join(outDir, '知识库'));
+  cleanDir(path.join(stageDir, 'data'));
+  cleanDir(path.join(stageDir, '知识库'));
 
   // 回归守卫：如果配置/日志跑进了 resources/app 里（说明 APP_ROOT 没生效），
   // 这个包绝对不能发——用户会在安装包内部找配置，装到 Program Files 还会写不进去。
@@ -381,15 +418,92 @@ if (skipSmoke) {
   log('已清掉冒烟测试产生的临时文件（data / 知识库 保持空的，且确认没写进 resources/app）');
 }
 
-// ---------------------------------------------------------------- 8. 汇总
+// ---------------------------------------------------------------- 8. 同步到固定发布目录（保留用户数据）
+//
+// ⚠️ 这一步是 2026-11-16 修复「覆盖新版丢配置」的核心：
+//    只替换程序文件，**data / 知识库 原样保留**（除非 --clean）。
+//    用户以后直接把新版程序文件复制进来覆盖，API Key / 人设 / 知识笔记都不会丢。
+
+stepLog('同步到固定发布目录（保留 data / 知识库）');
+let keptFiles = 0;
+if (fs.existsSync(outDir)) {
+  for (const entry of fs.readdirSync(outDir, { withFileTypes: true })) {
+    const target = path.join(outDir, entry.name);
+    if (USER_DIRS.has(entry.name)) {
+      keptFiles += walk(target).length;
+      continue;
+    }
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+} else {
+  fs.mkdirSync(outDir, { recursive: true });
+}
+for (const entry of fs.readdirSync(stageDir, { withFileTypes: true })) {
+  if (USER_DIRS.has(entry.name)) continue; // 不拿临时目录里的空目录覆盖用户的
+  copyEntry(path.join(stageDir, entry.name), path.join(outDir, entry.name));
+}
+fs.mkdirSync(path.join(outDir, 'data'), { recursive: true });
+fs.mkdirSync(path.join(outDir, '知识库'), { recursive: true });
+
+if (cleanData) {
+  for (const name of USER_DIRS) {
+    const dir = path.join(outDir, name);
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  log('[--clean] 已清空 data / 知识库（恢复出厂）');
+} else if (keptFiles > 0) {
+  log(`保留了原来的 data / 知识库（${keptFiles} 个文件，未被覆盖）`);
+} else {
+  log('data / 知识库 是空的（第一次安装或之前没填过配置）');
+}
+
+// ---------------------------------------------------------------- 9. 生成升级包（不含用户数据）
+
+stepLog('生成升级包（只含程序文件，解压覆盖用）');
+const updateStage = path.join(outRoot, `._update-${process.pid}`);
+fs.rmSync(updateStage, { recursive: true, force: true });
+fs.mkdirSync(updateStage, { recursive: true });
+for (const entry of fs.readdirSync(stageDir, { withFileTypes: true })) {
+  if (USER_DIRS.has(entry.name)) continue;
+  copyEntry(path.join(stageDir, entry.name), path.join(updateStage, entry.name));
+}
+const quote = (value) => `'${String(value).replace(/'/g, "''")}'`;
+// 用系统自带的 tar.exe（bsdtar）打 zip：
+//   · Windows 10 1803+ / 11 自带，不装任何工具；
+//   · 条目分隔符是标准的 `/`（PowerShell 5.1 的 Compress-Archive / ZipFile 会写成 `\`，
+//     放在别的解压工具/系统上会解出一堆带反斜杠的文件名）；
+//   · 中文文件名会带 UTF-8 标记，资源管理器正常显示。
+// 老系统没有 tar.exe 时退回 Compress-Archive（能用，但分隔符可能不标准）。
+fs.rmSync(updateZip, { force: true });
+const topEntries = fs.readdirSync(updateStage);
+let zipResult = spawnSync('tar.exe', ['-a', '-c', '-f', updateZip, '-C', updateStage, ...topEntries], {
+  stdio: 'inherit',
+  windowsHide: true
+});
+if (zipResult.error && zipResult.error.code === 'ENOENT') {
+  log('[!] 系统没有 tar.exe，退回 Compress-Archive（条目分隔符可能不是标准 /）');
+  const zipCommand = `Compress-Archive -Path ${quote(path.join(updateStage, '*'))} -DestinationPath ${quote(updateZip)} -Force`;
+  zipResult = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', zipCommand], {
+    stdio: 'inherit',
+    windowsHide: true
+  });
+}
+assert(zipResult.status === 0, `生成升级包失败（退出码 ${zipResult.status}）：${updateZip}`);
+fs.rmSync(updateStage, { recursive: true, force: true });
+assert(fs.existsSync(updateZip), '升级包没有生成出来？');
+log(`升级包：${updateZip}（${mb(fs.statSync(updateZip).size)}，不含 data / 知识库）`);
+
+// ---------------------------------------------------------------- 10. 汇总
 
 stepLog('打包完成');
-const total = dirSize(outDir);
-const files = walk(outDir).length;
-const exeFile = path.join(outDir, exeName);
+const total = dirSize(stageDir);
+const files = walk(stageDir).length;
+const exeFile = path.join(stageDir, exeName);
 const seconds = Math.round((Date.now() - startedAt) / 1000);
-log(`产物：${outDir}`);
-log(`大小：${mb(total)}（${files} 个文件，压缩前）`);
+log(`发布目录：${outDir}`);
+log(`升级包：${updateZip}`);
+log(`本次程序：${mb(total)}（${files} 个文件，压缩前）`);
 if (fs.existsSync(exeFile)) {
   log(`主程序：${exeName}（${mb(fs.statSync(exeFile).size)}）`);
   log(`SHA-256：${sha256(exeFile)}`);
@@ -397,7 +511,14 @@ if (fs.existsSync(exeFile)) {
 log(`耗时：${seconds} 秒`);
 log('');
 log('分享前自查：');
-log(`  · 产物在项目外面（${outRoot}），不会混进源码目录；整文件夹发出去 / 拷 U 盘都可以。`);
-log('  · data 和 知识库 现在是空的，不会带出你的东西。');
+log(`  · 发布目录固定为 ${path.basename(outDir)}，以后覆盖同一目录不会丢 data / 知识库。`);
+log('  · 升级包只有程序文件；对方解压到旧文件夹覆盖即可，data / 知识库 原样保留。');
+log(`  · data 和 知识库 现在是${cleanData ? '空的' : keptFiles > 0 ? '对方自己的（已保留）' : '空的'}，不会带出你的东西。`);
 log('  · 对方解压/放好后双击 exe；第一次会提示没有 API Key，填上就能用。');
-log('  · 以后更新只覆盖 exe + resources + locales，**保留对方的 data 和 知识库**。');
+
+// 临时构建目录用完就删（失败时保留，方便排查）
+try {
+  fs.rmSync(stageDir, { recursive: true, force: true });
+} catch (_) {
+  /* 删不掉不影响结果 */
+}
