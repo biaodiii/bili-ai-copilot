@@ -90,7 +90,7 @@ function realDanmakuCmd(text, name, idSeed = 1) {
 /** 把真实报文喂给一个弹幕客户端，取出 danmaku 事件（走真实解析路径） */
 function parseViaClient(payload, counter) {
   const client = new BilibiliDanmakuClient({
-    roomId: '1234567',
+    roomId: '123456789',
     logger: { debug() {}, info() {}, warn() {}, error() {} }
   });
   const events = [];

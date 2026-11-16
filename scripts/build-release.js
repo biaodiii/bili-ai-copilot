@@ -18,7 +18,7 @@
  *
  * 产物长这样（数据在 exe 旁边，拷走整个文件夹就带走全部配置和笔记）：
  *
- *   直播AI搭档-0.1.0-win64/
+ *   直播AI搭档-0.2.0-win64/
  *     直播AI搭档.exe          ← 由 electron.exe 改名
  *     使用说明.txt
  *     data/                   ← 空目录；配置/日志/观众记忆第一次启动后落这里
@@ -264,9 +264,13 @@ const guide = `直播AI搭档 ${version} · 使用说明
   全都在**本文件夹内**，拷走整个文件夹 = 带走全部配置和笔记：
     data\\settings.json     配置（含 API Key / Cookie，**别把这个文件夹发给别人**）
     data\\观众记忆\\        本场记录 + 老观众名册
+    data\\语音存档\\        语音页「念一段话」保存下来的 wav + 同名 txt（txt 里记着用的语气）
     知识库\\                你的知识条目（一个条目一个 .md，能直接用记事本改）
     data\\boot.log          排查问题的日志（超过 5MB 会自动轮转）
   另外弹幕记录默认写在：我的文档\\直播AI搭档\\弹幕记录\\
+
+  语音语气：「念一段话」可以选语气（自然/开心/温柔/撒娇/激动/生气/难过/认真/耳语）或自己写要求；
+  只有 Qwen-Audio-3.1/3.0 这几款云模型认语气，默认的 qwen3-tts-flash 会把语气下拉置灰。
 
   吉祥物：第一次启动会自动导入 默认素材图片\\ 里那 12 张表情（平常/喜欢/害羞/睡觉/打招呼/
   疑惑/慌张/叹气/聆听/说话/突然出现/吃白饭）。想换图就在面板「吉祥物」页导入自己的；
@@ -334,11 +338,21 @@ if (skipSmoke) {
 } else {
   stepLog('冒烟验证（真跑一遍产物自己的 --smoke-test）');
   const exePath = path.join(outDir, exeName);
+  /**
+   * ⚠️ 必须清掉 `ELECTRON_RUN_AS_NODE`：
+   * 从某些宿主环境（例如 Electron 里起的终端 / 自检工具）跑打包时，这个变量会继承给子进程，
+   * 产物 exe 会**按 Node 解释器启动**，于是 `--smoke-test` 被当成 Node 参数 → 报
+   * `bad option: --smoke-test`（退出码 9），看着像包坏了，其实只是环境变量没清。
+   * 2026-10-21 实测踩到。
+   */
+  const smokeEnv = { ...process.env };
+  delete smokeEnv.ELECTRON_RUN_AS_NODE;
   const result = spawnSync(exePath, ['--smoke-test'], {
     cwd: outDir,
     stdio: 'inherit',
     timeout: 120000,
-    windowsHide: true
+    windowsHide: true,
+    env: smokeEnv
   });
   assert(result.status === 0, `产物冒烟测试没过（退出码 ${result.status}）。看 ${path.join(outDir, 'data', 'smoke-test.log')}`);
   const smokeLog = path.join(outDir, 'data', 'smoke-test.log');

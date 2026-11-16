@@ -23,6 +23,9 @@ const DEFAULT_TIMEOUT_MS = 15000;
 /** 缓存最多留多少条（按音频体积算，60 字左右的 wav 大约 200KB，100 条约 20MB） */
 const DEFAULT_CACHE_SIZE = 100;
 
+const fs = require('fs');
+const path = require('path');
+
 // ---------------------------------------------------------------- 接口族
 //
 // ⚠️ **一个模型只认一条接口路径**，这是实测出来的，不是猜的：
@@ -78,6 +81,8 @@ const TTS_MODELS = [
     path: PATH_SPEECH_SYNTH,
     price: '输入 1.5 元 + 输出 12 元 / 百万 token',
     note: '新一代，音色最多也最精致；按 token 计费（比按字符略贵）',
+    // 支持 input.instruction（自然语言语气指令）和行内情感标签，见「念一段话」的语气下拉
+    instruction: true,
     defaultVoice: 'longanhuan_v3.1',
     voices: [
       // 多语种与方言（上海/广东/东北/重庆/陕西/云南/宁波/甘肃话 + 日韩法德葡意越印尼语）
@@ -130,6 +135,7 @@ const TTS_MODELS = [
     path: PATH_SPEECH_SYNTH,
     price: '1 元/万字符',
     note: '上一代，按字符计费；音色比 3.1 少',
+    instruction: true,
     defaultVoice: 'longanhuan_v3.6',
     voices: [
       { voice: 'longanhuan_v3.6', name: '龙安欢', desc: '女 · 25 岁，官方示例音色（最稳）' },
@@ -152,6 +158,7 @@ const TTS_MODELS = [
     path: PATH_SPEECH_SYNTH,
     price: '1.4 元/万字符',
     note: '旗舰音色，音质比 flash 好；只有两个内置音色',
+    instruction: true,
     defaultVoice: 'longanlingxin',
     voices: [
       { voice: 'longanlingxin', name: '龙安灵心', desc: '女 · 知心温暖音，陪伴感最强' },
@@ -412,8 +419,12 @@ class TtsClient {
         price: item.price,
         note: item.note,
         defaultVoice: item.defaultVoice || '',
-        voices: item.voices
+        voices: item.voices,
+        // 能不能用「语气」下拉（input.instruction）：界面拿它置灰/提示
+        instruction: Boolean(item.instruction)
       })),
+      // 语气预设（界面下拉直接用这一份，保证和存档文案一致）
+      tones: TTS_TONES.map((tone) => ({ id: tone.id, label: tone.label, instruction: tone.instruction })),
       // 当前模型的音色清单（老字段，保持兼容）
       voices: model ? model.voices : [],
       ...this.stats
@@ -425,8 +436,10 @@ class TtsClient {
     return true;
   }
 
-  _cacheKey(config, text) {
-    return `${config.model}|${config.voice}|${config.languageType}|${text}`;
+  _cacheKey(config, text, instruction = '') {
+    // ⚠️ 语气指令必须进 key（2026-11-14）：不然「开心版」和「生气版」会互相命中缓存，
+    // 用户换了语气却听到上一次的声音，还会以为功能没生效。
+    return `${config.model}|${config.voice}|${config.languageType}|${instruction}|${text}`;
   }
 
   _remember(key, audio, limit) {
@@ -441,28 +454,37 @@ class TtsClient {
 
   /**
    * 合成一段语音。
-   * @returns {Promise<{ audio: string, mime: string, cached: boolean, characters: number }>}
+   * @param {string} text
+   * @param {{instruction?:string, tone?:string}} [options]
+   *   `instruction` 是自然语言语气指令（仅 qwen-audio 3.x 支持，其它模型会被忽略）。
+   * @returns {Promise<{ audio: string, mime: string, cached: boolean, characters: number,
+   *                     instruction: string, tone: string }>}
    *   `audio` 是纯 base64（不含 data: 前缀），界面自己拼 `data:audio/wav;base64,...`
    */
-  async synthesize(text) {
+  async synthesize(text, options = {}) {
     const config = this._config();
+    const model = findModel(config.model);
     const content = normalizeText(text);
     if (!content) throw new TtsError('没有要合成的内容', { code: 'EMPTY_TEXT' });
     if (!config.apiKey) throw new TtsError('还没填云端语音的 API Key', { code: 'NO_API_KEY' });
 
-    const key = this._cacheKey(config, content);
+    // 模型不支持自由指令时直接丢掉，不把它塞给服务端（qwen3 会报参数错误）
+    const instruction = modelSupportsInstruction(model) ? normalizeInstruction(options.instruction) : '';
+    const tone = String(options.tone || '').trim();
+
+    const key = this._cacheKey(config, content, instruction);
     const hit = this.cache.get(key);
     if (hit) {
       this.stats.hits += 1;
       this._remember(key, hit, config.cacheSize); // 刷新 LRU 位置
-      return { audio: hit, mime: 'audio/wav', cached: true, characters: 0 };
+      return { audio: hit, mime: 'audio/wav', cached: true, characters: 0, instruction, tone };
     }
     if (this.inFlight.has(key)) return this.inFlight.get(key);
 
-    const job = this._request(config, content)
+    const job = this._request(config, content, instruction)
       .then((result) => {
         this._remember(key, result.audio, config.cacheSize);
-        return result;
+        return { ...result, instruction, tone };
       })
       .finally(() => {
         this.inFlight.delete(key);
@@ -471,7 +493,7 @@ class TtsClient {
     return job;
   }
 
-  async _request(config, content) {
+  async _request(config, content, instruction = '') {
     const model = findModel(config.model);
     if (!model) {
       this.stats.errors += 1;
@@ -486,7 +508,15 @@ class TtsClient {
       model.path === PATH_SPEECH_SYNTH
         ? {
             model: model.id,
-            input: { text: content, voice: config.voice, format: 'wav', sample_rate: 24000 }
+            input: {
+              text: content,
+              voice: config.voice,
+              format: 'wav',
+              sample_rate: 24000,
+              // 语气指令（2026-11-14）：官方非实时接口放在 input.instruction，
+              // 只有 qwen-audio-3.x 认；空指令不传，保持和以前一模一样的请求
+              ...(instruction ? { instruction } : {})
+            }
           }
         : {
             model: model.id,
@@ -600,6 +630,143 @@ class TtsClient {
   }
 }
 
+// ---------------------------------------------------------------- 语音存档（2026-10-21）
+//
+// 「念一段话 + 存成音频」用的：把云端**已经合成好的** base64 直接写文件，
+// 不重新编码、不重新请求（命中缓存就是同一份音频，不重复花钱）。
+//
+// 为什么放这里而不是 main.js：这是纯文件逻辑，能拿临时目录单测；
+// main 只负责「什么时候写、写到哪」。
+
+/** 存档目录名（放在程序根目录/data/ 下） */
+const ARCHIVE_DIR_NAME = '语音存档';
+/** 文件名里最多带几个字（取原文开头；太长在资源管理器里看不全） */
+const ARCHIVE_NAME_CHARS = 12;
+
+/** mime → 扩展名（服务端实测 audio/x-wav；万一以后给 mp3/ogg 也认） */
+function archiveExtension(mime) {
+  const type = String(mime || '').toLowerCase();
+  if (type.includes('mpeg') || type.includes('mp3')) return '.mp3';
+  if (type.includes('ogg')) return '.ogg';
+  if (type.includes('m4a') || type.includes('mp4')) return '.m4a';
+  return '.wav';
+}
+
+function twoDigits(value) {
+  return String(value).padStart(2, '0');
+}
+
+/** 文件名：`2026-10-31_15-02-11 开场白` —— 时间戳在前，按名字排序就是时间顺序 */
+function archiveBaseName(text, now = new Date()) {
+  const stamp =
+    `${now.getFullYear()}-${twoDigits(now.getMonth() + 1)}-${twoDigits(now.getDate())}` +
+    `_${twoDigits(now.getHours())}-${twoDigits(now.getMinutes())}-${twoDigits(now.getSeconds())}`;
+  const words = String(text || '')
+    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, ARCHIVE_NAME_CHARS)
+    .replace(/[. ]+$/g, '');
+  return words ? `${stamp} ${words}` : stamp;
+}
+
+/**
+ * 「念一段话」的语气预设（2026-11-14 主播要求：能自己调输出的感情）。
+ *
+ * 每条 `instruction` 都会作为官方非实时接口的 `input.instruction`
+ * （自然语言语气指令）发给 TTS；空字符串表示"不加指令，按音色本来的样子念"。
+ *
+ * ⚠️ 只有 qwen-audio-3.x 这一族支持自由指令（见各模型的 `instruction` 标记）。
+ * qwen3-tts-flash 不支持 → 界面按 `status().models[].instruction` 置灰，
+ * 主进程也会把指令丢掉，绝不把不认识的字段塞给服务端。
+ *
+ * 为什么预设放主进程：界面、测试、存档都要用同一份文案，
+ * 放两处迟早对不上（以前"音色清单"就是这么踩的坑）。
+ */
+const TTS_TONES = [
+  { id: 'natural', label: '自然', instruction: '' },
+  { id: 'happy', label: '开心', instruction: '用开心、轻快的语气说，语速稍快，尾音上扬' },
+  { id: 'gentle', label: '温柔', instruction: '用温柔、轻声的语气说，语速放慢一些' },
+  { id: 'coquettish', label: '撒娇', instruction: '用撒娇、软糯的语气说，句尾带一点拖音' },
+  { id: 'excited', label: '激动', instruction: '用兴奋、激动的语气说，重音明显，语速偏快' },
+  { id: 'angry', label: '生气', instruction: '用生气、压低的语气说，重音加重，语速偏快' },
+  { id: 'sad', label: '难过', instruction: '用难过、低落的语气说，语速放慢，声音低沉' },
+  { id: 'serious', label: '认真', instruction: '用认真、平稳的语气说，吐字清晰，不拖腔' },
+  { id: 'whisper', label: '耳语', instruction: '用低声耳语的语气说，气声多一点，音量放轻' },
+  { id: 'custom', label: '自定义', instruction: '' }
+];
+
+/** 自定义语气要求最多留多少字（服务端也有上限，太长反而糊） */
+const TONE_INSTRUCTION_MAX = 120;
+
+function findTone(id) {
+  const key = String(id || '').trim();
+  return TTS_TONES.find((tone) => tone.id === key) || TTS_TONES[0];
+}
+
+/** 清洗用户/模型给的指令：压成一行、去掉控制字符、限长 */
+function normalizeInstruction(value) {
+  return String(value || '')
+    .replace(/[\u0000-\u001f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, TONE_INSTRUCTION_MAX);
+}
+
+/**
+ * 语气 id + 自定义文本 → 真正发给 TTS 的 instruction。
+ * `custom` 用自定义文本；其它预设用固定文案（面板传上来的 instruction 不采信，防止被改坏）。
+ */
+function toneInstruction(toneId, customText) {
+  const tone = findTone(toneId);
+  if (tone.id === 'custom') return normalizeInstruction(customText);
+  return tone.instruction;
+}
+
+/** 这个模型认不认 `input.instruction` */
+function modelSupportsInstruction(model) {
+  return Boolean(model && model.instruction);
+}
+
+/**
+ * 把一段 base64 音频写进存档目录，同时写一份同名 `.txt` 存原文（方便核对/重录）。
+ * 同一秒存两次同名内容会加 `-2`、`-3`，绝不覆盖。
+ *
+ * @returns {{file:string, textFile:string, bytes:number, dir:string}}
+ */
+function saveAudio(dir, { audio, mime, text, instruction, toneLabel, now } = {}) {
+  const targetDir = path.resolve(String(dir || '.'));
+  if (!audio) throw new TtsError('这一条还没有合成好的音频，先点「念出来」', { code: 'NO_AUDIO' });
+  const buffer = Buffer.from(String(audio), 'base64');
+  if (!buffer.length) throw new TtsError('音频是空的，没有写文件', { code: 'NO_AUDIO' });
+  fs.mkdirSync(targetDir, { recursive: true });
+  const ext = archiveExtension(mime);
+  const base = archiveBaseName(text, now);
+  let stem = path.join(targetDir, base);
+  let index = 2;
+  while (fs.existsSync(`${stem}${ext}`) || fs.existsSync(`${stem}.txt`)) {
+    stem = path.join(targetDir, `${base}-${index}`);
+    index += 1;
+  }
+  const file = `${stem}${ext}`;
+  fs.writeFileSync(file, buffer);
+  const textFile = `${stem}.txt`;
+  // 存档里记下语气：以后想"照着这一版重录"有据可查（2026-11-14 加）
+  const instructionText = String(instruction || '').trim();
+  const labelText = String(toneLabel || '').trim();
+  const toneLine = instructionText
+    ? `语气：${labelText ? `${labelText} — ` : ''}${instructionText}`
+    : labelText
+      ? `语气：${labelText}`
+      : '';
+  fs.writeFileSync(
+    textFile,
+    `${String(text || '').trim()}\n${toneLine ? `\n${toneLine}\n` : ''}`,
+    'utf8'
+  );
+  return { file, textFile, bytes: buffer.length, dir: targetDir };
+}
+
 module.exports = {
   TtsClient,
   TtsError,
@@ -612,5 +779,17 @@ module.exports = {
   voicesOfModel,
   defaultVoiceFor,
   BUILTIN_VOICES,
-  DEFAULT_CACHE_SIZE
+  DEFAULT_CACHE_SIZE,
+  saveAudio,
+  archiveBaseName,
+  archiveExtension,
+  ARCHIVE_DIR_NAME,
+  ARCHIVE_NAME_CHARS,
+  // 语气（2026-11-14）
+  TTS_TONES,
+  TONE_INSTRUCTION_MAX,
+  findTone,
+  normalizeInstruction,
+  toneInstruction,
+  modelSupportsInstruction
 };

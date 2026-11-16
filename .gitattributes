@@ -1,0 +1,10 @@
+# 换行统一：仓库里文本一律 LF；.bat 在 Windows 上必须是 CRLF
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.wav binary
+*.mp3 binary

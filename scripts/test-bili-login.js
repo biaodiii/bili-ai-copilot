@@ -129,13 +129,13 @@ function startFakeNav(handler) {
     // 先起假接口，把 nav 地址指过去
     const fake = await startFakeNav(() => ({
       code: 0,
-      data: { isLogin: true, uname: '测试观众', mid: 10001, face: 'https://i1.hdslb.com/face.jpg' }
+      data: { isLogin: true, uname: '测试观众', mid: 100000001, face: 'https://i1.hdslb.com/face.jpg' }
     }));
 
     const cookies = [
       { name: 'SESSDATA', value: 'sess-value-123' },
       { name: 'bili_jct', value: 'jct-456' },
-      { name: 'DedeUserID', value: '10001' },
+      { name: 'DedeUserID', value: '100000001' },
       { name: 'buvid3', value: 'buvid-789' }
     ];
     const login = loadLoginModule({ cookies, userInfo: null });
@@ -156,7 +156,7 @@ function startFakeNav(handler) {
       const status = login.status();
       assert(status.loggedIn === true, '应该完成登录');
       assert(status.userName === '测试观众', `昵称不对: ${status.userName}`);
-      assert(status.userUid === '10001', `uid 不对: ${status.userUid}`);
+      assert(status.userUid === '100000001', `uid 不对: ${status.userUid}`);
       assert(login.currentCookies().SESSDATA === 'sess-value-123', '保存的 SESSDATA 不对');
       assert(login.currentCookieHeader().includes('bili_jct=jct-456'), 'Cookie 串应包含 bili_jct');
 
@@ -183,7 +183,7 @@ function startFakeNav(handler) {
     const cookies = [{ name: 'SESSDATA', value: 'sess-value-123' }];
     const login = loadLoginModule({ cookies, userInfo: null });
     login._test.store.patch({
-      account: { loggedIn: true, sessdata: 'sess-value-123', userName: '测试观众', userUid: '10001' }
+      account: { loggedIn: true, sessdata: 'sess-value-123', userName: '测试观众', userUid: '100000001' }
     });
     assert(login.currentCookies().SESSDATA === 'sess-value-123', '准备数据不对');
 

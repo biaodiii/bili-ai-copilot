@@ -73,7 +73,17 @@ contextBridge.exposeInMainWorld('api', {
   tts: {
     synthesize: (text) => invoke('tts:synthesize', text),
     status: () => invoke('tts:status'),
-    clearCache: () => invoke('tts:clearCache')
+    clearCache: () => invoke('tts:clearCache'),
+    // 念一段话 / 存成音频（2026-10-21；2026-11-14 加语气：options = { tone, customInstruction }）
+    preview: (text, options) => invoke('tts:preview', text, options),
+    saveLast: () => invoke('tts:saveLast'),
+    openArchive: () => invoke('tts:openArchive'),
+    writeLine: (prompt) => invoke('tts:writeLine', prompt)
+  },
+  // 语音串行化（2026-10-21）：悬浮窗念完一条就报一声，主进程据此放行下一批弹幕
+  speech: {
+    done: (replyId) => invoke('speech:done', replyId),
+    failed: (replyId, reason) => invoke('speech:failed', replyId, reason)
   },
   mascot: {
     pickImages: () => invoke('mascot:pickImages')
@@ -212,6 +222,8 @@ contextBridge.exposeInMainWorld('api', {
     knowledgeReview: (handler) => on('knowledge:review', handler),
     /** 观众记忆的状态变了（开始/结束本场、总结完一批、清空）：面板刷新状态行 */
     memoryChanged: (handler) => on('memory:changed', handler),
+    /** 面板「念一段话」要出声了：让悬浮窗先停掉正在念的回复（2026-10-21） */
+    speechStop: (handler) => on('speech:stop', handler),
     paused: (handler) => on('ai:paused', handler),
     usage: (handler) => on('usage', handler),
     log: (handler) => on('log', handler),

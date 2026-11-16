@@ -83,7 +83,7 @@ function makeStore(overrides = {}) {
       selfNote: ''
     },
     danmaku: {
-      roomId: '1234567',
+      roomId: '123456789',
       sessdata: '',
       useCookie: false,
       ignoreKeywords: '',
@@ -149,7 +149,7 @@ function realDanmakuCmd(text, name, idSeed = 1) {
 /** 把真实报文喂给一个弹幕客户端，取出 danmaku 事件（走真实解析路径） */
 function parseViaClient(payload) {
   const client = new BilibiliDanmakuClient({
-    roomId: '1234567',
+    roomId: '123456789',
     logger: { debug() {}, info() {}, warn() {}, error() {} }
   });
   const events = [];
@@ -456,9 +456,9 @@ function waitForEvent(emitter, name, timeoutMs = 8000) {
     const copilot = new Copilot({ store, logger: makeLogger() });
     // 就算能拿到房间信息，默认设置下也不应该写进提示词
     copilot.roomInfo = {
-      realRoomId: '1234567',
+      realRoomId: '123456789',
       anchorName: '测试观众',
-      title: '今晚八点开播真的假的，卧槽真开播了',
+      title: '测试直播间开播了',
       areaText: '生活 / 生活杂谈',
       liveStatus: 1
     };
@@ -1006,6 +1006,128 @@ function waitForEvent(emitter, name, timeoutMs = 8000) {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  await test('回复带上「触发它的那条弹幕」：回弹幕才有，主动搭话/主播说话/通知都为空', async () => {
+    // 2026-10-21 修 bug 的根据：以前悬浮窗读的是全局「最后一条弹幕」，
+    // 所以主动搭话也会念上一条观众弹幕。现在由 copilot 明确带上触发条目。
+    const fake = await startFakeLlm(() => JSON.stringify({ reply: '嗯嗯', emotion: 'happy' }));
+    const store = makeStore({
+      api: { baseUrl: fake.baseUrl },
+      danmaku: { minIntervalSec: 0, batchWindowMs: 100 },
+      proactive: { enabled: true, maxPerHour: 0, chancePercent: 100, modes: ['topic'], maxChars: 40 }
+    });
+    const copilot = new Copilot({ store, logger: makeLogger() });
+
+    const firstReply = waitForEvent(copilot, 'reply');
+    copilot.onDanmaku({ user: '小明', text: '多少钱', ts: Date.now() });
+    const danmakuReply = await firstReply;
+    assert.deepStrictEqual(
+      danmakuReply.viewer,
+      [{ user: '小明', text: '多少钱' }],
+      `弹幕回复要带上触发它的弹幕：${JSON.stringify(danmakuReply.viewer)}`
+    );
+
+    const proactiveReply = await copilot.triggerProactive({ force: true });
+    assert(proactiveReply, '强制搭话应该真的说一句');
+    assert.deepStrictEqual(proactiveReply.viewer, [], '主动搭话不该带观众原话');
+
+    const talked = await copilot.talk('你在吗');
+    assert(talked, '主播说话应该有回复');
+    assert.deepStrictEqual(talked.viewer, [], '主播自己说的话不该带观众原话');
+
+    const said = copilot.say('提醒一句', 'notice');
+    assert.deepStrictEqual(said.viewer, [], '程序通知不该带观众原话');
+    fake.server.close();
+  });
+
+  await test('语音闸门：语音没念完不处理下一批；放行后接着处理（排队不丢）', async () => {
+    const fake = await startFakeLlm(() => JSON.stringify({ reply: '好', emotion: 'happy' }));
+    const store = makeStore({ api: { baseUrl: fake.baseUrl }, danmaku: { minIntervalSec: 0, batchWindowMs: 100 } });
+    const copilot = new Copilot({ store, logger: makeLogger() });
+    const calls = [];
+    copilot.ask = async (items) => {
+      calls.push(items.map((item) => item.text));
+      return null;
+    };
+    copilot.lastSendAt = 0;
+    copilot.queue = [{ type: 'danmaku', user: '甲', text: '第一条', ts: Date.now() }];
+
+    copilot.holdForSpeech('r1', 60000);
+    assert.strictEqual(copilot.isHoldingForSpeech(), true);
+    await copilot.flush();
+    assert.strictEqual(calls.length, 0, '语音没念完时不该处理下一批');
+    assert.strictEqual(copilot.queue.length, 1, '排队中的弹幕不能被丢掉');
+
+    assert.strictEqual(copilot.releaseSpeech('done'), true);
+    assert.strictEqual(copilot.isHoldingForSpeech(), false);
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    assert.strictEqual(calls.length, 1, '放行后要接着处理下一批');
+    assert.strictEqual(calls[0][0], '第一条', '按先进先出的顺序处理');
+    fake.server.close();
+  });
+
+  await test('语音闸门：引擎卡住时按估算超时放行，不会永久停住', async () => {
+    const fake = await startFakeLlm(() => JSON.stringify({ reply: '好', emotion: 'happy' }));
+    const store = makeStore({ api: { baseUrl: fake.baseUrl }, danmaku: { minIntervalSec: 0, batchWindowMs: 100 } });
+    const copilot = new Copilot({ store, logger: makeLogger() });
+    const calls = [];
+    copilot.ask = async (items) => {
+      calls.push(items.length);
+      return null;
+    };
+    copilot.lastSendAt = 0;
+    copilot.queue = [{ type: 'danmaku', user: '甲', text: '第一条', ts: Date.now() }];
+    // 传入的超时会被夹到最小值（5 秒）：这里就是验证"没人上报也会自己放行"
+    copilot.holdForSpeech('r1', 1);
+    assert.strictEqual(copilot.isHoldingForSpeech(), true);
+    await new Promise((resolve) => setTimeout(resolve, 5300));
+    assert.strictEqual(copilot.isHoldingForSpeech(), false, '超时后必须自动放行');
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    assert.strictEqual(calls.length, 1, '超时放行后要恢复处理');
+    fake.server.close();
+  });
+
+  await test('弹幕兜底去重：同一条重复送达只处理一次，id 复用但内容不同照常放行', async () => {
+    // 2026-11-01 主播报「同一条弹幕收到两遍」：根因是两条连接同时在收。
+    // 这里守的是最后一道防线：同 id + 同用户 + 同正文在 30 秒内只算一次。
+    const fake = await startFakeLlm(() => JSON.stringify({ reply: '嗯', emotion: 'happy' }));
+    const store = makeStore({ api: { baseUrl: fake.baseUrl } });
+    const copilot = new Copilot({ store, logger: makeLogger() });
+    const base = { id: 'dm-1', user: '小明', text: '你好', ts: Date.now() };
+    copilot.onDanmaku({ ...base });
+    copilot.onDanmaku({ ...base, ts: Date.now() + 5 }); // 另一条连接重放：接收时间不同、id/正文相同
+    assert.strictEqual(copilot.queue.length, 1, `重复送达的不该再进队列：${copilot.queue.length}`);
+    assert.strictEqual(copilot.stats.duplicateEvents, 1, '要记下挡掉了多少条');
+    // 服务端 id 复用：同一个 id 但内容不同 → 必须放行，不能误杀
+    copilot.onDanmaku({ ...base, text: '另一句', ts: Date.now() + 10 });
+    assert.strictEqual(copilot.queue.length, 2, 'id 复用但内容不同要照常处理');
+    copilot.pause('测试收尾');
+    fake.server.close();
+  });
+
+  await test('弹幕连接串行：并发 start/stop 不会交叉执行，避免同时存在两条连接', async () => {
+    // 以前 start/stop 没排队：两个「登录后重连」并发时，两边各自 new 一个客户端，
+    // 被覆盖的那个没人关、还在收弹幕 → 同一条弹幕收到 2~3 遍。
+    const fake = await startFakeLlm(() => JSON.stringify({ reply: '嗯', emotion: 'happy' }));
+    const store = makeStore({ api: { baseUrl: fake.baseUrl } });
+    const copilot = new Copilot({ store, logger: makeLogger() });
+    let running = 0;
+    let maxParallel = 0;
+    const order = [];
+    const step = async (name) => {
+      running += 1;
+      maxParallel = Math.max(maxParallel, running);
+      order.push(name);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      running -= 1;
+    };
+    copilot._startDanmakuNow = async () => step('start');
+    copilot._stopDanmakuNow = async () => step('stop');
+    await Promise.all([copilot.startDanmaku(), copilot.stopDanmaku(), copilot.startDanmaku()]);
+    assert.strictEqual(maxParallel, 1, `连接操作不能并发（实测最多同时 ${maxParallel} 个）`);
+    assert.deepStrictEqual(order, ['start', 'stop', 'start'], `要按调用顺序串行执行：${order.join(',')}`);
+    fake.server.close();
   });
 
   console.log(`\n结果：通过 ${passed} 项，失败 ${failed} 项`);

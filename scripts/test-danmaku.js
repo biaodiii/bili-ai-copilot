@@ -30,7 +30,7 @@ function test(name, fn) {
 
 function makeClient() {
   return new BilibiliDanmakuClient({
-    roomId: 1234567,
+    roomId: 123456789,
     logger: { debug() {}, info() {}, warn() {}, error() {} }
   });
 }
@@ -226,7 +226,7 @@ test('所有收到和丢掉的弹幕都进了记录文件（端到端）', () =>
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dm-e2e-'));
   const recorder = new DanmakuRecorder({ dir, config: { enabled: true } });
   const client = new BilibiliDanmakuClient({
-    roomId: 1234567,
+    roomId: 123456789,
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     recorder
   });

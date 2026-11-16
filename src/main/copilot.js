@@ -259,6 +259,23 @@ class Copilot extends EventEmitter {
     this.viewerMemory = viewerMemory || null;
     this.llm = new DeepSeekClient(() => this.store.get().api, logger);
     this.client = null;
+    /**
+     * 弹幕连接的操作队列（2026-11-01 修 bug 加的）。
+     *
+     * `startDanmaku` / `stopDanmaku` 都是异步的（要等 socket 关闭、等握手），
+     * 以前没有排队，两个「登录后重连」几乎同时进来时会出现：
+     *   A 在 await stop（client 还没置 null）→ B 也看到这个 client 又 stop 一次 →
+     *   两边各自 `new` 一个客户端，后建的覆盖 `this.client`，
+     *   **被覆盖的那个没人关、还在收弹幕** → 同一条弹幕收到 2~3 遍。
+     * 现在所有连接操作都串在这条 promise 链上，一次只跑一个。
+     */
+    this._danmakuOps = Promise.resolve();
+    /**
+     * 事件级兜底去重（2026-11-01）：万一还有残留连接往这里送同一条弹幕，
+     * 按「id + 用户 + 正文」在 30 秒内只处理一次（id 复用但内容不同不会被误杀）。
+     * 正常单连接时它基本不会命中，纯粹是防线。
+     */
+    this._recentEvents = new Map();
 
     this.history = []; // {role, content, ts, kind}
     this.queue = [];
@@ -280,6 +297,16 @@ class Copilot extends EventEmitter {
     this.proactiveSaid = [];
     this.proactiveRunning = false;
     this.inFlight = false;
+    /**
+     * 语音串行化（2026-10-21 主播要求）：
+     *   `speechHold`      正在等悬浮窗把这一条念完；非空 = 不要处理下一批弹幕
+     *   `speechHoldTimer` 兜底超时（语音引擎卡住 / 没回调时强制放行）
+     *
+     * 为什么闸门放在主进程：只有这里知道"队列里还有没有下一批"。
+     * 悬浮窗只负责在念完后调 `speech:done`（见 main.js / overlay.js）。
+     */
+    this.speechHold = null;
+    this.speechHoldTimer = null;
     /** 最近一次收到弹幕/事件的时间：搭话跑到一半有人说话，这条就作废 */
     this.lastIncomingAt = 0;
     this.lastSendAt = 0;
@@ -349,6 +376,10 @@ class Copilot extends EventEmitter {
     this.paused = true;
     this.pausedReason = reason || '手动暂停';
     this.queue = [];
+    // 暂停了就不用再等语音念完（队列也清了，不会再有"下一批"）
+    clearTimeout(this.speechHoldTimer);
+    this.speechHoldTimer = null;
+    this.speechHold = null;
     // 暂停期间别再挂着冷场计时器：真到点了也会被跳过，不如干脆撤掉
     clearTimeout(this.proactiveTimer);
     this.proactiveTimer = null;
@@ -378,6 +409,8 @@ class Copilot extends EventEmitter {
       danmaku: this.client ? this.client.status() : { running: false, connected: false },
       queueLength: this.queue.length,
       inFlight: this.inFlight,
+      // 正在等语音念完（界面可以用它显示「正在念，N 条排队」）
+      speechWaiting: Boolean(this.speechHold),
       paused: this.paused,
       pausedReason: this.pausedReason,
       consecutiveFailures: this.consecutiveFailures,
@@ -396,7 +429,21 @@ class Copilot extends EventEmitter {
 
   // ---------------- 弹幕连接 ----------------
 
-  async startDanmaku() {
+  /** 把一次连接操作排进队列：start / stop 永远不会交叉执行（见 `_danmakuOps` 的注释） */
+  _enqueueDanmakuOp(task) {
+    const run = this._danmakuOps.then(task, task);
+    this._danmakuOps = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  startDanmaku() {
+    return this._enqueueDanmakuOp(() => this._startDanmakuNow());
+  }
+
+  async _startDanmakuNow() {
     const settings = this.store.get();
     const roomId = String(settings.danmaku.roomId || '').trim();
     if (!roomId) {
@@ -406,9 +453,9 @@ class Copilot extends EventEmitter {
       this.emitStatus();
       throw new Error(error);
     }
-    if (this.client) await this.stopDanmaku();
+    if (this.client) await this._stopDanmakuNow();
 
-    this.client = new BilibiliDanmakuClient({
+    const client = new BilibiliDanmakuClient({
       roomId,
       sessdata: settings.danmaku.sessdata,
       useCookie: settings.danmaku.useCookie,
@@ -416,20 +463,39 @@ class Copilot extends EventEmitter {
       logger: this.logger,
       recorder: this.recorder
     });
-    this.client.on('danmaku', (event) => this.onDanmaku(event));
+    this.client = client;
+    /**
+     * ⚠️ 每个回调都要先确认「我还是当前那条连接」。
+     * 万一某个旧客户端没被关干净（这次事故就是这么来的），它会照常 emit，
+     * 没有这道检查就会把同一条弹幕再送一遍给界面和模型。
+     */
+    const isCurrent = () => this.client === client;
+    client.on('danmaku', (event) => {
+      if (!isCurrent()) return;
+      this.onDanmaku(event);
+    });
     // 礼物 / 上舰 / 醒目留言 / 进场：2026-10-21 连解析一起删了（这条连接收不到这些命令，
     // 见 danmaku.js 的 _dispatch）。所以这里只接弹幕，不再有 onEventMessage。
-    this.client.on('room', (info) => {
+    client.on('room', (info) => {
+      if (!isCurrent()) return;
       this.roomInfo = info;
       this.emit('room-info', info);
     });
-    this.client.on('popularity', (value) => this.emit('popularity', value));
-    this.client.on('status', () => this.emitStatus());
-    this.client.on('open', () => this.logger.info('弹幕监听已就绪'));
+    client.on('popularity', (value) => {
+      if (!isCurrent()) return;
+      this.emit('popularity', value);
+    });
+    client.on('status', () => {
+      if (!isCurrent()) return;
+      this.emitStatus();
+    });
+    client.on('open', () => {
+      if (isCurrent()) this.logger.info('弹幕监听已就绪');
+    });
 
     try {
-      await this.client.start();
-      this.logger.info(`开始监听直播间 ${roomId}`);
+      await client.start();
+      if (isCurrent()) this.logger.info(`开始监听直播间 ${roomId}`);
     } catch (error) {
       this.lastError = error.message;
       this.emit('error', { scope: 'danmaku', message: error.message });
@@ -439,7 +505,11 @@ class Copilot extends EventEmitter {
     return this.status();
   }
 
-  async stopDanmaku() {
+  stopDanmaku() {
+    return this._enqueueDanmakuOp(() => this._stopDanmakuNow());
+  }
+
+  async _stopDanmakuNow() {
     if (this.client) {
       await this.client.stop();
       this.client = null;
@@ -451,7 +521,33 @@ class Copilot extends EventEmitter {
 
   // ---------------- 消息入口 ----------------
 
+  /**
+   * 同一条弹幕是不是刚处理过（兜底去重，见 `_recentEvents`）。
+   * key 只放服务端给的那几个字段，**不放接收时间**——重连重放时接收时间会变，但 id/正文不变。
+   */
+  _isRepeatedEvent(event) {
+    if (!event) return false;
+    const id = String(event.id || '').trim();
+    if (!id) return false;
+    const key = `${id}|${String(event.user || '')}|${String(event.text || '')}`;
+    const now = Date.now();
+    const last = this._recentEvents.get(key);
+    if (last && now - last < 30000) return true;
+    this._recentEvents.set(key, now);
+    if (this._recentEvents.size > 800) {
+      for (const [entryKey, ts] of this._recentEvents) {
+        if (now - ts > 30000) this._recentEvents.delete(entryKey);
+      }
+    }
+    return false;
+  }
+
   onDanmaku(event) {
+    if (this._isRepeatedEvent(event)) {
+      this.stats.duplicateEvents = (this.stats.duplicateEvents || 0) + 1;
+      this.logger.debug?.(`重复送达的弹幕已忽略（累计 ${this.stats.duplicateEvents} 条）：${event.user}: ${event.text}`);
+      return;
+    }
     this.stats.received += 1;
     this._recent.push({ user: event.user, text: event.text, ts: event.ts });
     while (this._recent.length > 30) this._recent.shift();
@@ -513,7 +609,9 @@ class Copilot extends EventEmitter {
     const config = this.store.get().danmaku;
     // 队列满时丢掉最旧的待处理弹幕。这是「弹幕没被回复」的真实原因之一，
     // 必须计数上报，不能静默丢弃。
-    const cap = Math.max(20, config.maxBatch * 4);
+    // 上限 60 条（2026-10-21 从 maxBatch*4 提上来的）：等语音念完的时候队列会更长，
+    // 原来的上限会把还没回过的弹幕挤掉——那等于"念慢一点就漏回"。
+    const cap = Math.max(60, config.maxBatch * 8);
     while (this.queue.length > cap) {
       this.queue.shift();
       this.stats.dropped = (this.stats.dropped || 0) + 1;
@@ -696,6 +794,57 @@ class Copilot extends EventEmitter {
     return elapsed >= minInterval;
   }
 
+  // ---------------- 语音串行化（2026-10-21） ----------------
+  //
+  // 主播要的：一条弹幕回复念完了，才让模型处理下一批；念的过程中新弹幕**排队**，不许漏。
+  // 闸门只拦「弹幕队列」：主播自己在面板/对话区说的话、主动搭话照旧优先（它们不经队列）。
+
+  /**
+   * 挂上闸门：这条回复要念，念完之前不处理下一批。
+   * @param {string} replyId  回复 id（悬浮窗念完时原样带回来，对不上就不放行，防止串号）
+   * @param {number} estimateMs 兜底超时（由 `estimateSpeechMs` 算，最长 120 秒）
+   */
+  holdForSpeech(replyId, estimateMs) {
+    if (this.speechHold) this.releaseSpeech('replaced');
+    this.speechHold = String(replyId || 'reply');
+    clearTimeout(this.speechHoldTimer);
+    const wait = Math.min(
+      SPEECH_MAX_HOLD_MS,
+      Math.max(SPEECH_MIN_HOLD_MS, Number(estimateMs) || SPEECH_MIN_HOLD_MS)
+    );
+    this.speechHoldTimer = setTimeout(() => {
+      this.logger.warn?.(`语音 ${Math.round(wait / 1000)} 秒还没念完（可能卡住了），先放行下一批弹幕`);
+      this.releaseSpeech('timeout');
+    }, wait);
+    this.logger.debug?.(`等语音念完再处理下一批（预计 ${Math.round(wait / 1000)} 秒）`);
+    this.emitStatus();
+  }
+
+  /**
+   * 放行：语音念完了 / 念不出来 / 超时 / 关掉语音 / 关悬浮窗。
+   * @returns {boolean} 之前是否真的挂着闸门（重复调用无副作用）
+   */
+  releaseSpeech(reason = 'done') {
+    if (!this.speechHold) return false;
+    const replyId = this.speechHold;
+    this.speechHold = null;
+    clearTimeout(this.speechHoldTimer);
+    this.speechHoldTimer = null;
+    this.logger.debug?.(`语音放行（${reason}，${replyId}）`);
+    // 排队里有东西就接着处理（200ms 让气泡先画出来，和原来的节奏一致）
+    if (this.queue.length && !this.paused && !this.inFlight) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = setTimeout(() => this.flush(), 200);
+    }
+    this.emitStatus();
+    return true;
+  }
+
+  /** 现在是不是在等语音（界面拿来显示「正在念，N 条排队」） */
+  isHoldingForSpeech() {
+    return Boolean(this.speechHold);
+  }
+
   async flush() {
     clearTimeout(this.flushTimer);
     this.flushTimer = null;
@@ -704,6 +853,8 @@ class Copilot extends EventEmitter {
       return;
     }
     if (this.inFlight) return; // 当前请求结束后会再次尝试
+    // 语音还没念完：这一批继续排队，等 overlay 报 speech:done（或超时）后由 releaseSpeech 再叫 flush
+    if (this.speechHold) return;
     if (!this.canSend()) {
       const minInterval = Math.max(0, Number(this.store.get().danmaku.minIntervalSec) || 0) * 1000;
       const wait = Math.max(300, minInterval - (Date.now() - this.lastSendAt));
@@ -897,6 +1048,17 @@ class Copilot extends EventEmitter {
         emotion: parsed.emotion,
         // 正文里所有情绪标记的先后顺序，悬浮窗按这个次序演表情
         emotions: Array.isArray(parsed.emotions) ? parsed.emotions : [],
+        /**
+         * 触发这条回复的**观众弹幕**（2026-10-21 加）。
+         * 悬浮窗用它决定「显示/朗读哪句观众原话」——
+         * 以前读的是全局「最后一条弹幕」，导致主动搭话也会念上一条弹幕、
+         * 排队时还会张冠李戴（念成后进来的那条）。
+         * 主动搭话 / 主播说话 / 程序通知 → 空数组（不该念原话）。
+         */
+        viewer: list
+          .filter((item) => item.type === 'danmaku')
+          .map((item) => ({ user: String(item.user || ''), text: String(item.text || '') }))
+          .filter((item) => item.text),
         // source：弹幕 / 主播 / **主动搭话**（界面与日志据此区分，主动搭话不进「她回的弹幕」统计）
         source: list[0].type === 'operator' ? 'operator' : list[0].type === 'proactive' ? 'proactive' : 'danmaku',
         latencyMs: result.latencyMs,
@@ -939,7 +1101,8 @@ class Copilot extends EventEmitter {
       this.emitStatus();
       if (this.queue.length) {
         clearTimeout(this.retryTimer);
-        this.retryTimer = setTimeout(() => this.flush(), 200);
+        // 语音开着的时候要等它念完（由 releaseSpeech 接着叫 flush），这里别抢跑
+        if (!this.speechHold) this.retryTimer = setTimeout(() => this.flush(), 200);
       }
       // 这一轮回答完了：如果还有待办没问出口，从现在开始重新倒计时
       // （刚回完观众，回复区正显示着，等它显示完再问）
@@ -1799,6 +1962,8 @@ class Copilot extends EventEmitter {
       // 表情只给一个：这种程序生成的话没必要演一串
       emotions: extra.emotion ? [extra.emotion] : [],
       source,
+      // 程序自己说的话（提醒 / 汇报 / 通知）没有"触发它的观众弹幕" → 不显示也不念原话
+      viewer: [],
       latencyMs: 0,
       trigger: [],
       knowledge: [],
@@ -1950,10 +2115,29 @@ function findGarbledReason(text) {
   return '';
 }
 
+// ---------------------------------------------------------------- 语音超时估算（纯函数）
+//
+// 语音闸门正常靠悬浮窗念完主动上报；这个估算只是**兜底**：引擎卡住、回调丢了、
+// 云端请求挂住的时候，别让「正在念」把整条回复链路永久停住。
+// 中文语速按 ~4 字/秒（260ms/字）+ 500ms 停顿 + 3 秒余量；最短 5 秒、最长 2 分钟。
+
+const SPEECH_MS_PER_CHAR = 260;
+const SPEECH_MIN_HOLD_MS = 5000;
+const SPEECH_MAX_HOLD_MS = 120000;
+
+function estimateSpeechMs(text) {
+  const chars = String(text || '').replace(/\s+/g, '').length;
+  if (!chars) return SPEECH_MIN_HOLD_MS;
+  return Math.min(SPEECH_MAX_HOLD_MS, Math.max(SPEECH_MIN_HOLD_MS, chars * SPEECH_MS_PER_CHAR + 500 + 3000));
+}
+
 module.exports = {
   Copilot,
   cleanReply,
   splitDevMode,
+  estimateSpeechMs,
+  SPEECH_MIN_HOLD_MS,
+  SPEECH_MAX_HOLD_MS,
   parseResearchAnswer,
   parseOperatorResearchRequest,
   DEV_MODE_MARKER

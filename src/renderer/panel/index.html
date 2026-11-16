@@ -583,6 +583,41 @@
             </div>
           </div>
         </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>念一段话 / 存成音频</h2>
+            <span class="hint">让它当面念一句指定的话；云音色还能把音频存成文件</span>
+          </div>
+          <div class="form">
+            <label class="field">
+              <span>要念的内容</span>
+              <textarea id="speakText" rows="3" placeholder="例如：欢迎来到直播间，今天我们来玩《丝之歌》，有问题随时发弹幕。"></textarea>
+              <small>直接念这段文字，不经过大模型（不花 DeepSeek 的钱）。云音色按字符计费。</small>
+            </label>
+            <label class="field">
+              <span>语气（云音色）</span>
+              <div class="stack">
+                <select id="speakTone"></select>
+                <input id="speakToneText" type="text" placeholder="自定义要求，比如：用讲鬼故事的语气，压低声音慢慢说" />
+              </div>
+              <small id="speakToneHint">选一个预设，或选「自定义」自己写要求；会作为语气指令发给云端语音。</small>
+            </label>
+            <label class="field">
+              <span>或者让模型写一句</span>
+              <div class="stack">
+                <input id="speakPrompt" type="text" placeholder="例如：用开心的语气说一句开场白" />
+                <button class="btn tiny" id="speakWrite" type="button">让模型写一句</button>
+              </div>
+              <small>会多花一次 DeepSeek 调用；写出来的句子和它挑的语气都会填好，你可以再改。</small>
+            </label>
+            <div class="actions">
+              <button class="btn primary" id="speakPlay">念出来</button>
+              <button class="btn" id="speakSave">保存这条</button>
+              <button class="btn" id="speakOpenArchive">打开存档文件夹</button>
+              <span class="hint" id="speakStatus">系统语音只能念、不能存；云音色才有音频文件。</span>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- ================= 弹幕设置 ================= -->

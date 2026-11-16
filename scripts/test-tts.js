@@ -179,6 +179,60 @@ function startFakeTtsWithUrl(audioBytes = Buffer.from('RIFFfake-wav-bytes')) {
     fake.server.close();
   });
 
+  await test('语气指令：qwen-audio 模型会带 input.instruction，qwen3 模型不会', async () => {
+    const fake = await startFakeTts(() => okTts());
+    // qwen-audio 3.1：把 instruction 放进 input
+    const audioClient = new TtsClient({
+      getConfig: () => ({
+        apiKey: 'sk-test',
+        baseUrl: fake.baseUrl,
+        model: 'qwen-audio-3.1-tts-flash',
+        voice: 'longanhuan_v3.1'
+      })
+    });
+    const result = await audioClient.synthesize('你好呀', {
+      tone: 'happy',
+      instruction: '用开心、轻快的语气说，语速稍快'
+    });
+    assert.strictEqual(fake.received.length, 1);
+    assert.strictEqual(
+      fake.received[0].body.input.instruction,
+      '用开心、轻快的语气说，语速稍快',
+      'qwen-audio 要把语气指令放进 input.instruction'
+    );
+    assert.strictEqual(result.instruction, '用开心、轻快的语气说，语速稍快');
+
+    // qwen3-tts-flash 不支持：指令必须被丢掉，不能塞给服务端（会报参数错误）
+    const qwen3 = new TtsClient({
+      getConfig: () => ({ apiKey: 'sk-test', baseUrl: fake.baseUrl, model: 'qwen3-tts-flash', voice: 'Cherry' })
+    });
+    const dropped = await qwen3.synthesize('你好呀', { tone: 'happy', instruction: '用开心的语气说' });
+    assert.strictEqual(fake.received.length, 2);
+    assert.strictEqual('instruction' in fake.received[1].body.input, false, 'qwen3 不该带 instruction');
+    assert.strictEqual(dropped.instruction, '', '不支持时返回空指令');
+    fake.server.close();
+  });
+
+  await test('语气不同不能命中同一份缓存（缓存键含指令）', async () => {
+    const fake = await startFakeTts(() => okTts());
+    const client = new TtsClient({
+      getConfig: () => ({
+        apiKey: 'sk-test',
+        baseUrl: fake.baseUrl,
+        model: 'qwen-audio-3.1-tts-flash',
+        voice: 'longanhuan_v3.1'
+      })
+    });
+    await client.synthesize('同一句话', { instruction: '用开心的语气说' });
+    await client.synthesize('同一句话', { instruction: '用生气的语气说' });
+    assert.strictEqual(fake.received.length, 2, '不同语气必须重新合成，不能串音');
+    // 同一个语气再来一次 → 命中缓存
+    const again = await client.synthesize('同一句话', { instruction: '用开心的语气说' });
+    assert.strictEqual(again.cached, true);
+    assert.strictEqual(fake.received.length, 2, '同语气应该命中缓存');
+    fake.server.close();
+  });
+
   await test('同一句话并发请求只发一次 HTTP（预热 + 真播不会打两次）', async () => {
     const fake = await startFakeTts(() => okTts());
     const client = new TtsClient({ getConfig: () => ({ apiKey: 'sk-test', baseUrl: fake.baseUrl }) });
@@ -504,6 +558,61 @@ function startFakeTtsWithUrl(audioBytes = Buffer.from('RIFFfake-wav-bytes')) {
       }
     );
     fake.server.close();
+  });
+
+  // ------------------------------------------------ 语音存档（2026-10-21）
+
+  await test('语音存档：写 wav + 同名 txt，扩展名跟 mime 走，同一秒不覆盖', async () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { saveAudio, archiveBaseName, archiveExtension } = require('../src/main/tts');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tts-archive-'));
+    try {
+      // 4 字节假音频（'RIFF'）足够验证"按 base64 解码后原样写入"
+      const audio = Buffer.from('RIFF').toString('base64');
+      const fixed = new Date(2026, 9, 31, 15, 2, 11);
+      const first = saveAudio(dir, { audio, mime: 'audio/x-wav', text: '欢迎来到直播间，今天玩丝之歌', now: fixed });
+      assert.ok(fs.existsSync(first.file), `wav 要写出来：${first.file}`);
+      assert.strictEqual(path.basename(first.file), '2026-10-31_15-02-11 欢迎来到直播间，今天玩丝.wav');
+      assert.deepStrictEqual([...fs.readFileSync(first.file)], [...Buffer.from('RIFF')], '文件内容要原样写进去');
+      assert.ok(fs.existsSync(first.textFile), '要有一份 .txt 存原文');
+      assert.strictEqual(fs.readFileSync(first.textFile, 'utf8').trim(), '欢迎来到直播间，今天玩丝之歌');
+      assert.strictEqual(first.bytes, 4);
+
+      // 同一秒同一句再来一次：加 -2，绝不覆盖
+      const second = saveAudio(dir, { audio, mime: 'audio/x-wav', text: '欢迎来到直播间，今天玩丝之歌', now: fixed });
+      assert.notStrictEqual(second.file, first.file);
+      assert.ok(/-2\.wav$/.test(second.file), `重名要加 -2：${second.file}`);
+
+      // 文件名里的非法字符要清掉；mime 换成 mp3 就用 .mp3
+      assert.strictEqual(archiveExtension('audio/mpeg'), '.mp3');
+      assert.strictEqual(archiveExtension('audio/x-wav'), '.wav');
+      assert.strictEqual(archiveExtension(''), '.wav');
+      const weird = archiveBaseName('a/b:c*d?e"f<g>h|i', fixed);
+      assert.ok(!/[<>:"/\\|?*]/.test(weird), `文件名不能带非法字符：${weird}`);
+      const mp3 = saveAudio(dir, { audio, mime: 'audio/mpeg', text: '我是 mp3', now: fixed });
+      assert.ok(mp3.file.endsWith('.mp3'), `mime 是 mp3 就存 .mp3：${mp3.file}`);
+
+      // 存档里要记下语气（2026-11-14 加）：以后想"照着这一版重录"有据可查
+      const toned = saveAudio(dir, {
+        audio,
+        mime: 'audio/x-wav',
+        text: '语气存档测试',
+        toneLabel: '撒娇',
+        instruction: '用撒娇、软糯的语气说，句尾带一点拖音',
+        now: fixed
+      });
+      const tonedTxt = fs.readFileSync(toned.textFile, 'utf8');
+      assert.ok(tonedTxt.includes('语气存档测试'), '原文要在 txt 里');
+      assert.ok(tonedTxt.includes('语气：撒娇 — 用撒娇、软糯的语气说'), `txt 要记下语气：${tonedTxt}`);
+
+      // 没音频 / 空音频：明确报错，不能写个 0 字节的假文件
+      assert.throws(() => saveAudio(dir, { text: '没有音频' }), /先点「念出来」/);
+      assert.throws(() => saveAudio(dir, { audio: '', text: '空' }), TtsError);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   console.log('');

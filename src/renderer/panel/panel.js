@@ -23,7 +23,8 @@ const state = {
   feed: [],
   logFilter: 'all',
   logs: [],
-  ttsModels: [] // 可选的语音模型清单（每个模型自带它的音色清单）
+  ttsModels: [], // 可选的语音模型清单（每个模型自带它的音色清单）
+  ttsTones: [] // 语气预设（主进程给：id/label/instruction，2026-11-14）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -776,6 +777,8 @@ function renderSpeechEngine() {
   if (cloud) cloud.checked = engine === 'cloud';
   const fallback = $('speechFallback');
   if (fallback) fallback.checked = speech.fallbackToSystem !== false;
+  // 引擎一变，「念一段话」能不能保存也跟着变（系统语音存不了）
+  if (typeof updateSpeakUi === 'function') updateSpeakUi();
 }
 
 /**
@@ -2474,6 +2477,8 @@ function initSpeechPanel() {
   // 引擎选择 / 云音色这两块和「系统语音能不能用」无关，所以放在最前面初始化。
   // （以前这段写在系统语音的提前 return 之后，环境里没有 speechSynthesis 时整块都不会执行）
   bindSpeechEngine();
+  // 「念一段话 / 存成音频」也不依赖系统语音（云音色就能念能存），所以同样放在前面
+  wireSpeakCard();
 
   const status = $('speechStatus');
   const select = $('speechVoice');
@@ -2571,11 +2576,14 @@ function bindSpeechEngine() {
     try {
       const status = await window.api.tts.status();
       if (Array.isArray(status.models) && status.models.length) state.ttsModels = status.models;
+      if (Array.isArray(status.tones) && status.tones.length) state.ttsTones = status.tones;
     } catch (_) {
       /* 拿不到就退化成「右边手填音色 ID」，不影响系统语音 */
     }
     fillModelOptions();
     fillVoiceOptions();
+    renderSpeakTones();
+    updateSpeakUi();
   };
 
   const renderTts = async () => {
@@ -2621,6 +2629,8 @@ function bindSpeechEngine() {
       fillModelOptions();
       fillVoiceOptions();
       renderTts();
+      // 换模型会影响「语气」是否可用（只有 qwen-audio-3.x 认 instruction）
+      updateSpeakUi();
       toast(
         usable
           ? `模型已切到 ${model ? model.label : value}，音色不用换`
@@ -2719,6 +2729,273 @@ function bindSpeechEngine() {
       toast('语音缓存已清空（下次会重新合成）', 'ok');
     });
   }
+}
+
+// ------------------------------------------------------------ 念一段话 / 存成音频（2026-10-21）
+//
+// 主播要的：「让模型念出指定内容，并且可以保存生成的音频」。
+//  - 「念出来」：云音色走主进程合成（和回复共用一个缓存），面板这边用 Audio 播；
+//    系统语音走 speechSynthesis（只能念、拿不到音频数据，所以存不了）。
+//  - 「先试听、再保存」：主进程把这段音频暂时留着，点「保存这条」就把**刚才试听的那段**
+//    写进 data\语音存档\（同名的 .txt 存原文）。不会因为保存又合成一次、又花一次钱。
+//  - 「让模型写一句」：借大模型写台词，填到输入框里让你改，不进直播回复的上下文。
+
+let speakPreview = null;
+let speakAudioEl = null;
+
+function currentSpeechEngine() {
+  const speech = (state.settings && state.settings.speech) || {};
+  return speech.engine === 'cloud' ? 'cloud' : 'system';
+}
+
+/** 当前云音色模型（用来判断它认不认语气指令） */
+function currentCloudModel() {
+  const speech = (state.settings && state.settings.speech) || {};
+  const id = (speech.cloud && speech.cloud.model) || '';
+  return (state.ttsModels || []).find((item) => item.id === id) || null;
+}
+
+/** 语气下拉能不能用：云音色 + 当前模型支持 instruction（qwen-audio-3.x） */
+function cloudToneSupported() {
+  const model = currentCloudModel();
+  return Boolean(model && model.instruction);
+}
+
+/** 语气选项：优先用主进程给的预设；拿不到时至少保证有「自然/自定义」 */
+function toneOptions() {
+  if (Array.isArray(state.ttsTones) && state.ttsTones.length) return state.ttsTones;
+  return [
+    { id: 'natural', label: '自然' },
+    { id: 'custom', label: '自定义' }
+  ];
+}
+
+function selectedToneId() {
+  const node = $('speakTone');
+  return (node && node.value) || 'natural';
+}
+
+/** 把主进程的预设画进下拉（默认保留用户已选项） */
+function renderSpeakTones() {
+  const select = $('speakTone');
+  if (!select) return;
+  const current = select.value || 'natural';
+  const tones = toneOptions();
+  select.innerHTML = '';
+  for (const tone of tones) {
+    const option = document.createElement('option');
+    option.value = tone.id;
+    option.textContent = tone.label;
+    select.appendChild(option);
+  }
+  select.value = tones.some((tone) => tone.id === current) ? current : 'natural';
+}
+
+function stopPanelAudio() {
+  if (!speakAudioEl) return;
+  try {
+    speakAudioEl.pause();
+  } catch (_) {
+    /* ignore */
+  }
+  speakAudioEl = null;
+}
+
+function updateSpeakUi() {
+  const engine = currentSpeechEngine();
+  // 语气只对「云音色 + 支持 instruction 的模型」开放，其它情况置灰并说明原因
+  const toneSupported = engine === 'cloud' && cloudToneSupported();
+  const toneSelect = $('speakTone');
+  if (toneSelect) toneSelect.disabled = !toneSupported;
+  const toneText = $('speakToneText');
+  if (toneText) toneText.disabled = !toneSupported;
+  const toneHint = $('speakToneHint');
+  if (toneHint) {
+    if (engine !== 'cloud') {
+      toneHint.textContent = '语气只对云音色生效；系统语音只能在「系统语音设置」里调语速/音调。';
+    } else if (!toneSupported) {
+      toneHint.textContent =
+        '当前模型不支持语气指令。把上面「模型」换成 Qwen-Audio-3.1/3.0（这几款才认），或继续用「自然」。';
+    } else if (selectedToneId() === 'custom') {
+      toneHint.textContent = '用自然语言描述你想要的念法，会作为语气指令发给云端语音（最多 120 字）。';
+    } else {
+      toneHint.textContent = '选一个预设，或选「自定义」自己写要求；会作为语气指令发给云端语音。';
+    }
+  }
+
+  const saveBtn = $('speakSave');
+  if (saveBtn) saveBtn.disabled = engine !== 'cloud' || !speakPreview;
+  const hint = $('speakStatus');
+  if (!hint) return;
+  if (engine !== 'cloud') {
+    hint.textContent = '现在用系统语音：只能念、不能保存（系统语音不提供音频数据）。想存文件就把引擎切到「云音色」。';
+    return;
+  }
+  if (speakPreview) {
+    const kb = Math.max(1, Math.round((speakPreview.audio.length * 0.75) / 1024));
+    const tone = speakPreview.toneLabel ? `，语气「${speakPreview.toneLabel}」` : '';
+    hint.textContent = `已念过一段（约 ${kb}KB${tone}）。满意就点「保存这条」，文件落在 data\\语音存档\\。`;
+    return;
+  }
+  hint.textContent = '云音色：点「念出来」听，满意再点「保存这条」；文件存到 data\\语音存档\\（同目录还有一份 .txt 存原文）。';
+}
+
+async function playSpeakText() {
+  const node = $('speakText');
+  const text = String((node && node.value) || '').trim();
+  if (!text) {
+    toast('先写点要念的内容', 'warn');
+    return;
+  }
+  // 系统语音：面板本地念，和「试听一句」同一个行为；没有音频可存
+  if (currentSpeechEngine() !== 'cloud') {
+    speakPreview = null;
+    speakInPanel(text);
+    updateSpeakUi();
+    return;
+  }
+  const playBtn = $('speakPlay');
+  if (playBtn) {
+    playBtn.disabled = true;
+    playBtn.textContent = '正在合成…';
+  }
+  try {
+    // 语气：预设 → 主进程按预设文案发 instruction；「自定义」带上用户写的要求
+    const toneId = selectedToneId();
+    const toneNode = $('speakToneText');
+    const toneLabel = (toneOptions().find((tone) => tone.id === toneId) || {}).label || '';
+    const result = await window.api.tts.preview(text, {
+      tone: toneId,
+      customInstruction: String((toneNode && toneNode.value) || '').trim()
+    });
+    if (!result || !result.ok) {
+      toast(`合成失败：${(result && result.message) || '看日志'}`, 'err', 10000);
+      return;
+    }
+    speakPreview = {
+      text,
+      audio: result.audio,
+      mime: result.mime || 'audio/wav',
+      toneLabel
+    };
+    stopPanelAudio();
+    speakAudioEl = new Audio(`data:${speakPreview.mime};base64,${speakPreview.audio}`);
+    try {
+      await speakAudioEl.play();
+    } catch (_) {
+      // 自动播放被拦 / 音频坏了：不阻断保存，用户还是能存
+    }
+    const toneNote = result.toneLabel && result.instruction ? `，语气「${result.toneLabel}」` : '';
+    toast(
+      result.cached ? `正在念${toneNote}（命中缓存，不额外花钱）` : `正在念${toneNote}`,
+      'ok',
+      6000
+    );
+  } catch (error) {
+    toast(`合成失败：${error.message}`, 'err', 10000);
+  } finally {
+    if (playBtn) {
+      playBtn.disabled = false;
+      playBtn.textContent = '念出来';
+    }
+    updateSpeakUi();
+  }
+}
+
+async function writeSpeakLine() {
+  const promptNode = $('speakPrompt');
+  const prompt = String((promptNode && promptNode.value) || '').trim();
+  if (!prompt) {
+    toast('先写一句要求，比如「用开心的语气说一句开场白」', 'warn');
+    return;
+  }
+  const btn = $('speakWrite');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '正在写…';
+  }
+  try {
+    const result = await window.api.tts.writeLine(prompt);
+    if (!result || !result.ok) {
+      toast(`没写出来：${(result && result.message) || '看日志'}`, 'err', 10000);
+      return;
+    }
+    const textNode = $('speakText');
+    if (textNode) textNode.value = result.text;
+    // 模型挑的语气也一并填好（只认下拉里有的 id；它乱写就保持原样），用户还能自己改
+    const toneSelect = $('speakTone');
+    if (toneSelect && result.tone && toneOptions().some((tone) => tone.id === result.tone)) {
+      toneSelect.value = result.tone;
+    }
+    // 换了文本，之前那段音频就不算数了（避免"存下来的不是屏幕上这句"）
+    speakPreview = null;
+    updateSpeakUi();
+    const picked = (toneOptions().find((tone) => tone.id === result.tone) || {}).label;
+    toast(picked ? `写好了，语气选了「${picked}」；点「念出来」听听` : '写好了，点「念出来」听听', 'ok', 7000);
+  } catch (error) {
+    toast(`没写出来：${error.message}`, 'err', 10000);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '让模型写一句';
+    }
+  }
+}
+
+async function saveSpeakAudio() {
+  if (!speakPreview) {
+    toast('先点「念出来」听一遍，再保存', 'warn');
+    return;
+  }
+  const btn = $('speakSave');
+  if (btn) btn.disabled = true;
+  try {
+    const result = await window.api.tts.saveLast();
+    if (!result || !result.ok) {
+      toast(`保存失败：${(result && result.message) || '看日志'}`, 'err', 10000);
+      return;
+    }
+    toast(`已保存：${result.file}`, 'ok', 12000);
+  } catch (error) {
+    toast(`保存失败：${error.message}`, 'err', 10000);
+  } finally {
+    updateSpeakUi();
+  }
+}
+
+async function openSpeakArchive() {
+  try {
+    const result = await window.api.tts.openArchive();
+    if (!result || !result.ok) {
+      toast(`打不开存档目录：${(result && result.message) || '看日志'}`, 'err', 9000);
+      return;
+    }
+    toast(`语音存档目录：${result.dir}`, 'ok', 9000);
+  } catch (error) {
+    toast(`打不开存档目录：${error.message}`, 'err', 9000);
+  }
+}
+
+function wireSpeakCard() {
+  renderSpeakTones();
+  const play = $('speakPlay');
+  if (play) play.addEventListener('click', playSpeakText);
+  const write = $('speakWrite');
+  if (write) write.addEventListener('click', writeSpeakLine);
+  const save = $('speakSave');
+  if (save) save.addEventListener('click', saveSpeakAudio);
+  const open = $('speakOpenArchive');
+  if (open) open.addEventListener('click', openSpeakArchive);
+  // 语气下拉：切换时只刷新提示（「自定义」的输入框一直显示，选它才有用）
+  const tone = $('speakTone');
+  if (tone) {
+    tone.addEventListener('change', () => {
+      updateSpeakUi();
+      const input = $('speakToneText');
+      if (input && selectedToneId() === 'custom') input.focus();
+    });
+  }
+  updateSpeakUi();
 }
 
 function speakInPanel(text) {
@@ -3374,7 +3651,10 @@ function applyStatus(status) {
   }
   $('toggleDanmaku').textContent = danmaku.running ? '停止监听弹幕' : '开始监听弹幕';
   $('toggleDanmaku').classList.toggle('primary', !danmaku.running);
-  $('queuePill').querySelector('span').textContent = `队列 ${status.queueLength || 0}`;
+  // 队列数后面加「· 正在念」：语音念完之前弹幕会排队（2026-10-21 的串行化），
+  // 不说清楚的话，主播会以为"卡住了"
+  const queueLabel = `队列 ${status.queueLength || 0}${status.speechWaiting ? ' · 正在念' : ''}`;
+  $('queuePill').querySelector('span').textContent = queueLabel;
   if (danmaku.lastError) {
     $('roomLabel').textContent = `弹幕提示：${danmaku.lastError}`;
   } else if (state.settings && state.settings.danmaku.roomId) {
@@ -3417,7 +3697,7 @@ function renderDanmakuStats(status) {
   const queued = Number(copilotStats.garbled) || 0;
   const droppedGarbled = Number(copilotStats.droppedGarbled) || 0;
   const queueText = `队列 ${status.queueLength || 0}`;
-  set('dmQueue', status.paused ? `${queueText} · 已暂停` : queueText);
+  set('dmQueue', `${queueText}${status.speechWaiting ? ' · 正在念' : ''}${status.paused ? ' · 已暂停' : ''}`);
   set('dmGarbled', String(queued));
   set(
     'dmGarbledSub',

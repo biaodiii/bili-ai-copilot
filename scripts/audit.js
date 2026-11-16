@@ -164,7 +164,10 @@ function checkIpc() {
   const sent = new Set(
     [
       ...[...mainExpanded.matchAll(/send\(\s*[A-Za-z0-9_.]+,\s*'([^']+)'/g)].map((m) => m[1]),
-      ...[...mainExpanded.matchAll(/sendBoth\(\s*'([^']+)'/g)].map((m) => m[1])
+      ...[...mainExpanded.matchAll(/sendBoth\(\s*'([^']+)'/g)].map((m) => m[1]),
+      // 悬浮窗专用：channel 是第一个参数（`sendToOverlayIfExists('speech:stop')`），
+      // 它不会因为悬浮窗没开就把窗口创建出来，所以不能按普通 send 的写法要求它
+      ...[...mainExpanded.matchAll(/sendToOverlayIfExists\(\s*'([^']+)'/g)].map((m) => m[1])
     ]
   );
 
@@ -1408,6 +1411,220 @@ function checkPackaging() {
   }
 }
 
+/**
+ * 语音串行化 + 念原话的判定（2026-10-21 主播报的 bug）。
+ *
+ * 两条硬规则：
+ *   1. 「念观众原话」只能由回复自己带的 `reply.viewer` 决定——
+ *      以前读的是全局"最后一条弹幕"，于是主动搭话也会念上一条观众弹幕、排队时还会张冠李戴；
+ *   2. 语音开着时，弹幕回复要等念完（overlay 上报 speech:done/failed）再处理下一批，
+ *      而且每个"等"都必须有放行路径（上报 / 超时 / 关语音 / 关悬浮窗），绝不能永久停住。
+ */
+function checkSpeechSerialization() {
+  console.log('\n[语音] 只念本条原话 + 等念完再处理下一批');
+  const problems = [];
+  const overlay = read('src/renderer/overlay/overlay.js');
+  const copilot = read('src/main/copilot.js');
+  const main = read('src/main/main.js');
+  const preload = read('src/main/preload.js');
+
+  // 1) 悬浮窗：不许再靠 latestViewer 决定念什么
+  if (/latestViewer/.test(overlay)) problems.push('overlay.js 还在用 latestViewer（必须改成 reply.viewer）');
+  if (!/function replyViewerLines\(/.test(overlay)) problems.push('overlay.js 没有 replyViewerLines（reply.viewer → 原话）');
+  if (!/window\.api\.speech/.test(overlay) || !/api\.(done|failed)\(/.test(overlay)) {
+    problems.push('overlay.js 没有上报 speech:done / speech:failed');
+  }
+
+  // 2) copilot：闸门 + reply.viewer + 队列上限
+  for (const [pattern, label] of [
+    [/holdForSpeech\(/, 'holdForSpeech'],
+    [/releaseSpeech\(/, 'releaseSpeech'],
+    [/isHoldingForSpeech\(/, 'isHoldingForSpeech'],
+    [/viewer:\s*list/, 'reply.viewer（触发它的弹幕）'],
+    [/if \(this\.speechHold\) return;/, 'flush 里拦语音闸门'],
+    [/function estimateSpeechMs/, '语音超时估算']
+  ]) {
+    if (!pattern.test(copilot)) problems.push(`copilot.js 缺少${label}`);
+  }
+  if (!/Math\.max\(60, config\.maxBatch \* 8\)/.test(copilot)) {
+    problems.push('弹幕队列上限没提到 60（等语音时会把没回过的弹幕挤掉）');
+  }
+
+  // 3) main：挂闸 + 三条兜底放行
+  if (!/holdForSpeechIfNeeded\(reply\)/.test(main)) problems.push('main.js 的 reply 处理里没挂语音闸门');
+  for (const channel of ['speech:done', 'speech:failed']) {
+    if (!main.includes(`ipcMain.handle('${channel}'`)) problems.push(`main.js 没注册 ${channel}`);
+    if (!preload.includes(`invoke('${channel}'`)) problems.push(`preload.js 没暴露 ${channel}`);
+  }
+  if (!/releaseSpeech\('overlay-closed'\)/.test(main)) problems.push('关悬浮窗时没放行闸门（会干等到超时）');
+  if (!/speech\.enabled !== true \|\| next\.speech\.muted/.test(main)) problems.push('关语音/静音时没放行闸门');
+  if (!/if \(!reply \|\| reply\.source !== 'danmaku'\) return;/.test(main)) {
+    problems.push('main.js 没限定「只拦弹幕队列」（主播说话/主动搭话会被语音挡住）');
+  }
+  if (!/estimateSpeechMs\(/.test(main)) problems.push('main.js 没按字数估算超时');
+
+  // 4) 朗读排队（2026-11-02 主播要求）：任务播报不许打断正在念的话
+  if (!/speechQueue: \[\]/.test(overlay) || !/speechDraining: false/.test(overlay)) {
+    problems.push('overlay.js 没有朗读队列（speechQueue / speechDraining）');
+  }
+  if (!/function enqueueSpeech\(/.test(overlay) || !/function drainSpeechQueue\(/.test(overlay)) {
+    problems.push('overlay.js 没有 enqueueSpeech / drainSpeechQueue');
+  }
+  if (!/MAX_SPEECH_QUEUE/.test(overlay)) problems.push('朗读队列没有上限（堆爆会越念越落后）');
+  if (!/state\.speechQueue\.splice\(0, state\.speechQueue\.length\)/.test(overlay)) {
+    problems.push('stopSpeech 没清空朗读队列（静音/面板插队后还会继续念）');
+  }
+  // onReply 里不许再 stopSpeech：那正是"新回复掐断正在念的话"的写法
+  const onReplyBody = (overlay.match(/function onReply\(reply\) \{[\s\S]*?\n\}/) || [''])[0];
+  if (/stopSpeech\(/.test(onReplyBody)) {
+    problems.push('onReply 还在 stopSpeech（会打断正在念的内容，必须改成排队）');
+  }
+  if (!/enqueueSpeech\(\{/.test(onReplyBody)) problems.push('onReply 没把朗读排进队列');
+  // 两个引擎都要有看门狗：引擎不回调 onend 时队列不能永远卡住
+  const watchdogCount = (overlay.match(/watchdog = setTimeout\(/g) || []).length;
+  if (watchdogCount < 2) problems.push(`朗读看门狗不全（只有 ${watchdogCount} 处，系统语音和云端都要有）`);
+
+  if (problems.length) fail(`语音串行化有问题：${problems.join('；')}`);
+  else {
+    ok('念原话只认 reply.viewer；读完这一句再一句一句读队列；上报/超时/关语音/关悬浮窗四条放行路径都在');
+  }
+}
+
+/**
+ * 「念一段话 / 存成音频」（2026-10-21）。
+ *
+ * 三条硬规则：
+ *   1. 保存的必须是**刚才试听的那一段**（preview 记下来，saveLast 写它），
+ *      不能等到点保存时再合成一次——那样会换了音色/多花一次钱；
+ *   2. 只有云音色能存（系统语音不给音频数据）→ 界面要置灰并写明；
+ *   3. 文件只写到 `<程序根目录>/data/语音存档/`，同名不覆盖（加 -2）。
+ */
+function checkVoiceArchive() {
+  console.log('\n[语音存档] 念一段话 / 存成音频');
+  const problems = [];
+  const tts = read('src/main/tts.js');
+  const main = read('src/main/main.js');
+  const preload = read('src/main/preload.js');
+  const panel = read('src/renderer/panel/panel.js');
+  const html = read('src/renderer/panel/index.html');
+  const overlay = read('src/renderer/overlay/overlay.js');
+
+  // 1) 存档逻辑（纯函数、可单测）
+  if (!/function saveAudio\(/.test(tts)) problems.push('tts.js 没有 saveAudio（写 wav + txt）');
+  if (!/while \(fs\.existsSync\(/.test(tts)) problems.push('saveAudio 没有"同名不覆盖"的循环');
+  if (!/ARCHIVE_DIR_NAME/.test(tts) || !/saveAudio,\s*\n?\s*archiveBaseName/.test(tts)) {
+    problems.push('tts.js 没导出 saveAudio / ARCHIVE_DIR_NAME');
+  }
+
+  // 2) 主进程：目录 + 只存刚才试听的那段 + 四个通道
+  if (!/VOICE_ARCHIVE_DIR = path\.join\(APP_ROOT, 'data', ARCHIVE_DIR_NAME\)/.test(main)) {
+    problems.push('main.js 没把存档目录定在 <程序根目录>/data/语音存档');
+  }
+  if (!/lastSpeechPreview/.test(main)) problems.push('main.js 没有记下"刚才试听的那一段"');
+  for (const channel of ['tts:preview', 'tts:saveLast', 'tts:openArchive', 'tts:writeLine']) {
+    if (!main.includes(`ipcMain.handle('${channel}'`)) problems.push(`main.js 没注册 ${channel}`);
+    if (!preload.includes(`invoke('${channel}'`)) problems.push(`preload.js 没暴露 ${channel}`);
+  }
+  if (!/saveTtsAudio\(VOICE_ARCHIVE_DIR, lastSpeechPreview\)/.test(main)) {
+    problems.push('tts:saveLast 没保存"刚才试听的那一段"');
+  }
+
+  // 3) 界面：输入框、四个按钮 + 系统语音下保存置灰 + 播放前让悬浮窗闭嘴
+  for (const id of ['speakText', 'speakPrompt', 'speakPlay', 'speakWrite', 'speakSave', 'speakOpenArchive', 'speakStatus', 'speakTone', 'speakToneText', 'speakToneHint']) {
+    if (!html.includes(`id="${id}"`)) problems.push(`面板 HTML 少了 #${id}`);
+  }
+  if (!/function wireSpeakCard\(/.test(panel)) problems.push('panel.js 没有 wireSpeakCard');
+  if (!/saveBtn\.disabled = engine !== 'cloud' \|\| !speakPreview/.test(panel)) {
+    problems.push('保存按钮没按"云音色 + 念过"两个条件置灰');
+  }
+  for (const call of ['preview(', 'saveLast()', 'openArchive()', 'writeLine(']) {
+    if (!panel.includes(`window.api.tts.${call}`)) problems.push(`panel.js 没调 tts.${call}`);
+  }
+  if (!/window\.api\.on\.speechStop/.test(overlay) || !/speechStop: \(handler\)/.test(preload)) {
+    problems.push('缺 speech:stop 通道（面板开念前要让悬浮窗停下，否则两个声音叠在一起）');
+  }
+
+  // 4) 语气（2026-11-14 主播要求：能自己调输出的感情）
+  if (!/const TTS_TONES = \[/.test(tts)) problems.push('tts.js 没有语气预设 TTS_TONES');
+  if (!/instruction: true/.test(tts)) problems.push('没有模型标记「支持语气指令」（界面按它置灰）');
+  if (!/\.\.\.\(instruction \? \{ instruction \} : \{\}\)/.test(tts)) {
+    problems.push('请求报文里没有把 instruction 放进 input（qwen-audio 加了没用）');
+  }
+  if (!/\$\{instruction\}/.test(tts)) {
+    problems.push('缓存键没带语气指令（换语气会命中旧音频）');
+  }
+  if (!/语气：/.test(tts)) problems.push('存档 txt 没记下语气');
+  if (!/ipcMain\.handle\('tts:preview', async \(_event, text, options\)/.test(main)) {
+    problems.push('tts:preview 没接 options（语气传不进来）');
+  }
+  if (!/toneInstruction\(tone\.id, options && options\.customInstruction\)/.test(main)) {
+    problems.push('tts:preview 没按预设/自定义算语气指令');
+  }
+  if (!/tone: toneId/.test(main)) problems.push('tts:writeLine 没把模型挑的语气带回来');
+  if (!/preview: \(text, options\)/.test(preload)) problems.push('preload 的 tts.preview 没把 options 传过去');
+  if (!/function renderSpeakTones\(/.test(panel) || !/cloudToneSupported\(/.test(panel)) {
+    problems.push('panel.js 没有语气下拉的渲染/可用性判断');
+  }
+  if (!/customInstruction: String\(\(toneNode && toneNode\.value\) \|\| ''\)\.trim\(\)/.test(panel)) {
+    problems.push('panel.js 没把自定义语气发给主进程');
+  }
+
+  if (problems.length) fail(`语音存档有问题：${problems.join('；')}`);
+  else ok('念一段话：云音色合成 → 选语气/自定义要求 → 试听 → 保存 wav+txt（带语气）到 data\\语音存档');
+}
+
+/**
+ * 弹幕只能有一条连接（2026-11-01 修 bug 加的）。
+ *
+ * 事故：B 站登录成功时 `onChanged` 连发两次 → 两次 `stop→start` 并发 →
+ * `startDanmaku` 里的 `if (this.client) await stop()` 不是原子操作 →
+ * 两边各自 new 一个客户端，后建的覆盖前者，**被覆盖的那个没人关还在收** →
+ * 同一条弹幕收到 2~3 遍（弹幕记录里「原始报文样张」出现多条就是铁证）。
+ *
+ * 这条检查盯三件事：
+ *   1. start/stop 必须串行（`_danmakuOps` 队列）；
+ *   2. 旧客户端的事件要按「还是不是当前连接」丢掉（`isCurrent`）；
+ *   3. 登录重连要按 uid 合并（`loginRestartUid` + 600ms 定时器），只重连一次；
+ *      外加事件级兜底去重（`_recentEvents`）。
+ */
+function checkDanmakuSingleConnection() {
+  console.log('\n[弹幕] 同一时刻只允许一条连接');
+  const problems = [];
+  const copilot = read('src/main/copilot.js');
+  const main = read('src/main/main.js');
+
+  if (!/this\._danmakuOps = Promise\.resolve\(\)/.test(copilot)) {
+    problems.push('copilot.js 没有弹幕连接操作队列（_danmakuOps）');
+  }
+  if (!/_enqueueDanmakuOp\(task\)/.test(copilot) || !/this\._danmakuOps\.then\(task, task\)/.test(copilot)) {
+    problems.push('copilot.js 的 _enqueueDanmakuOp 不是串行队列');
+  }
+  if (!/startDanmaku\(\)\s*\{\s*\n\s*return this\._enqueueDanmakuOp/.test(copilot)) {
+    problems.push('startDanmaku 没走串行队列（并发时会建出两条连接）');
+  }
+  if (!/stopDanmaku\(\)\s*\{\s*\n\s*return this\._enqueueDanmakuOp/.test(copilot)) {
+    problems.push('stopDanmaku 没走串行队列');
+  }
+  if (!/const isCurrent = \(\) => this\.client === client/.test(copilot)) {
+    problems.push('copilot.js 没有「是不是当前连接」的判断（旧连接会继续送弹幕）');
+  }
+  const guardCount = (copilot.match(/if \(!isCurrent\(\)\) return;/g) || []).length;
+  if (guardCount < 3) problems.push(`旧连接的事件守卫太少（只有 ${guardCount} 处，danmaku/room/popularity/status 都要挡）`);
+  if (!/this\._recentEvents = new Map\(\)/.test(copilot) || !/_isRepeatedEvent\(event\)/.test(copilot)) {
+    problems.push('copilot.js 没有事件级兜底去重（_recentEvents）');
+  }
+  if (!/this\.stats\.duplicateEvents/.test(copilot)) problems.push('重复送达没有计数（duplicateEvents）');
+
+  if (!/loginRestartUid/.test(main)) problems.push('main.js 没按 uid 合并「登录后重连」');
+  if (!/loginRestartTimer = setTimeout\(/.test(main)) problems.push('main.js 的登录重连没有 600ms 合并窗口');
+  if (!/if \(uid && uid === loginRestartUid\) return;/.test(main)) {
+    problems.push('main.js 同一个 uid 的重复通知还会再重连一次');
+  }
+
+  if (problems.length) fail(`弹幕连接有问题：${problems.join('；')}`);
+  else ok('start/stop 串行 + 旧连接事件守卫 + 登录重连按 uid 合并 + 事件级兜底去重，四处都在');
+}
+
 console.log('===== 静态一致性审计 =====');
 checkDomIds({ name: '控制面板', htmlFile: 'src/renderer/panel/index.html', jsFiles: ['src/renderer/panel/panel.js'] });
 checkDomIds({ name: '悬浮窗', htmlFile: 'src/renderer/overlay/index.html', jsFiles: ['src/renderer/overlay/overlay.js'] });
@@ -1428,6 +1645,9 @@ checkProactive();
 checkRemovedLiveEvents();
 checkViewerMemory();
 checkLogRotation();
+checkSpeechSerialization();
+checkVoiceArchive();
+checkDanmakuSingleConnection();
 checkPendingBatch();
 checkPackaging();
 checkEncoding();

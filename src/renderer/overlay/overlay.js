@@ -85,7 +85,21 @@ const state = {
   emotionQueue: [],
   emotionTimer: null,
   emotionIdleTimer: null,
-  latestViewer: null,
+  /**
+   * 正在念的那条回复的 id（2026-10-21）。
+   * 念完 / 被打断时用它调 `speech:done`，主进程才放行下一批弹幕。
+   * 注意：不再用「最后一条弹幕」判断要不要念原话——那正是"主动搭话也念上一条弹幕"的根因。
+   */
+  speakReplyId: null,
+  /**
+   * 朗读队列（2026-11-02 主播要求）。
+   *
+   * 以前新回复一来就 `stopSpeech()` 打断上一句；但"我去查一下"→"查到了…"这类
+   * 任务播报会在念回复的过程中插进来，结果正在念的话被掐断、后面两条又互相打断。
+   * 现在所有要念的内容都排队：**读完这一句，再一句一句读后面的**。
+   */
+  speechQueue: [],
+  speechDraining: false,
   // 回复文本（吉祥物上方那一块）
   replyNode: null,
   replyToken: 0,
@@ -458,6 +472,13 @@ function voiceSummary() {
 }
 
 function stopSpeech() {
+  // 打断 = 连排队的一起取消（静音 / 面板「念一段话」插队 / 关语音时都该这样）
+  const pending = state.speechQueue.splice(0, state.speechQueue.length);
+  for (const item of pending) reportSpeech(item.replyId, false, 'cancelled');
+  // 打断也算"这一段念完了"：必须告诉主进程，否则它会一直等（直到兜底超时）
+  const interruptedId = state.speakReplyId;
+  state.speakReplyId = null;
+  if (interruptedId) reportSpeech(interruptedId, true, 'interrupted');
   // 连「等停顿结束再念回复」那个待命计时器一起清掉，
   // 否则静音/打断之后它还会到点把回复念出来
   if (state.speakGapTimer) {
@@ -503,6 +524,11 @@ function speechEngine() {
 
 /**
  * 系统语音朗读（原来的实现，一行没改逻辑，只是包进 Promise 好和云端共用调用方）。
+ *
+ * 2026-11-02 起加了**看门狗**：某些系统语音引擎被 cancel / 切换输出设备时不会回调 onend，
+ * 以前「一个 Prompt 包一条、串行朗读」就会永远卡在那一条，后面的排队全部不念。
+ * 超时估算按 0.4 秒/字 + 8 秒余量，最长 5 分钟，到点当作念完继续队。
+ *
  * @returns {Promise<boolean>} 是否真的念了
  */
 function speakWithSystem(content, config) {
@@ -522,17 +548,22 @@ function speakWithSystem(content, config) {
       utterance.volume = Math.min(1, Math.max(0, config.volume === undefined ? 1 : Number(config.volume)));
 
       utterance.onstart = () => markSpeaking();
-      // onend / onerror 都可能触发，用标记保证只结算一次
+      // onend / onerror / 看门狗 都可能触发，用标记保证只结算一次
       let settled = false;
+      let watchdog = null;
       const settle = () => {
         if (settled) return;
         settled = true;
+        if (watchdog) clearTimeout(watchdog);
+        watchdog = null;
         unmarkSpeaking();
         resolve(true);
       };
       utterance.onend = settle;
       // 合成失败（比如系统没装那个音色）也要放行，不然「念完再接回复」会永远卡住
       utterance.onerror = settle;
+      const expectedMs = Math.min(300000, Math.max(8000, String(content).length * 400 + 8000));
+      watchdog = setTimeout(settle, expectedMs);
       speech.synth.speak(utterance);
     } catch (error) {
       console.warn('[overlay] 系统语音朗读失败:', error && error.message);
@@ -583,9 +614,12 @@ async function speakWithCloud(content, token) {
     }
     state.cloudAudio = audio;
     let settled = false;
+    let watchdog = null;
     const settle = (played) => {
       if (settled) return;
       settled = true;
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = null;
       if (state.cloudAudio === audio) state.cloudAudio = null;
       unmarkSpeaking();
       resolve(played);
@@ -596,6 +630,9 @@ async function speakWithCloud(content, token) {
       console.warn('[overlay] 云端音频播放失败');
       settle(false);
     };
+    // 看门狗：音频被系统抢走 / 播放器不回调 onended 时，别让朗读队列永远卡住
+    const expectedMs = Math.min(300000, Math.max(8000, String(content).length * 400 + 10000));
+    watchdog = setTimeout(() => settle(true), expectedMs);
     try {
       const started = audio.play();
       // 浏览器可能返回 Promise（自动播放策略），失败就当没念
@@ -1004,7 +1041,41 @@ function applyReplyPersistUi(overlay) {
  */
 const VIEWER_REPLY_SPEECH_GAP_MS = 500;
 
-async function speakViewerThenReply(viewerText, replyText) {
+/**
+ * 这条回复的**触发弹幕**（主进程的 copilot 在 reply.viewer 里给的）。
+ * 主动搭话 / 主播自己说话 / 程序通知（`say()`）都是空数组——
+ * 这时不显示也不念观众原话（以前读的是全局"最后一条弹幕"，所以主动搭话会念上一条）。
+ */
+function replyViewerLines(reply) {
+  const list = Array.isArray(reply && reply.viewer) ? reply.viewer : [];
+  return list
+    .map((item) => ({ user: String((item && item.user) || '观众'), text: String((item && item.text) || '') }))
+    .filter((item) => item.text);
+}
+
+/** 观众原话拼一句：多条全部念出来（主播选的），显示和朗读用同一句 */
+function viewerSentence(lines) {
+  return lines.map((item) => `${item.user}说：${item.text}`).join('；');
+}
+
+/**
+ * 告诉主进程「这一条念完了」→ 放行下一批弹幕。
+ * 念不出来就报 failed（主进程立刻放行，不能让回复链路卡死）。
+ */
+function reportSpeech(replyId, ok, reason) {
+  if (!replyId) return;
+  if (state.speakReplyId === replyId) state.speakReplyId = null;
+  const api = window.api && window.api.speech;
+  if (!api) return;
+  try {
+    const call = ok ? api.done(replyId) : api.failed(replyId, reason || 'unavailable');
+    if (call && typeof call.catch === 'function') call.catch(() => {});
+  } catch (_) {
+    /* 上报失败不影响界面 */
+  }
+}
+
+async function speakViewerThenReply(viewerText, replyText, replyId) {
   const replyContent = String(replyText || '').trim();
   const viewerContent = String(viewerText || '').trim();
 
@@ -1014,23 +1085,76 @@ async function speakViewerThenReply(viewerText, replyText) {
     const started = await speak(viewerContent);
     if (started) {
       if (state.speakGapTimer) clearTimeout(state.speakGapTimer);
-      state.speakGapTimer = setTimeout(() => {
-        state.speakGapTimer = null;
-        speak(replyContent);
-      }, VIEWER_REPLY_SPEECH_GAP_MS);
+      await new Promise((resolve) => {
+        state.speakGapTimer = setTimeout(() => {
+          state.speakGapTimer = null;
+          resolve();
+        }, VIEWER_REPLY_SPEECH_GAP_MS);
+      });
+      const spokeReply = await speak(replyContent);
+      reportSpeech(replyId, spokeReply, 'no-voice');
       return;
     }
+    // 原话这次没念出来（静音 / 引擎失败）：别停在这里，至少把回复念了
+    const spoke = await speak(replyContent);
+    reportSpeech(replyId, spoke, 'no-voice');
+    return;
   }
-  speak([viewerContent, replyContent].filter(Boolean).join(' '));
+  const spoke = await speak([viewerContent, replyContent].filter(Boolean).join(' '));
+  reportSpeech(replyId, spoke, 'no-voice');
+}
+
+/** 朗读队列上限：真堆爆了宁可丢最旧的，也不能让界面越念越落后 */
+const MAX_SPEECH_QUEUE = 20;
+
+/**
+ * 把一条「要念的内容」排进朗读队列（2026-11-02）。
+ *
+ * 关着语音 / 静音时不排队（和以前一样，一条都不念）。
+ * 队列非空且没有在念时会立刻开始；否则等当前这句念完自然接上。
+ */
+function enqueueSpeech({ viewerText, text, replyId } = {}) {
+  const speech = (state.settings && state.settings.speech) || {};
+  if (speech.enabled === false || speech.muted) return;
+  const payload = {
+    viewerText: String(viewerText || '').trim(),
+    text: String(text || '').trim(),
+    replyId: String(replyId || '')
+  };
+  if (!payload.viewerText && !payload.text) return;
+  state.speechQueue.push(payload);
+  while (state.speechQueue.length > MAX_SPEECH_QUEUE) {
+    const dropped = state.speechQueue.shift();
+    // 被挤掉的这一条没念过：报 failed 让主进程（如果挂了闸门）立刻放行
+    reportSpeech(dropped.replyId, false, 'queue-overflow');
+  }
+  void drainSpeechQueue();
+}
+
+/** 一句一句念队列里的内容；同一时刻只跑一个泵（并发调用直接返回） */
+async function drainSpeechQueue() {
+  if (state.speechDraining) return;
+  state.speechDraining = true;
+  try {
+    while (state.speechQueue.length) {
+      const item = state.speechQueue.shift();
+      // 念的是这一条：念完（或被打断）要按这个 id 回报给主进程
+      state.speakReplyId = item.replyId;
+      await speakViewerThenReply(item.viewerText, item.text, item.replyId);
+    }
+  } finally {
+    state.speechDraining = false;
+    state.speakReplyId = null;
+  }
 }
 
 /** AI 回复来了：显示文本 + 切表情 + 进对话区 + 念出来 */
 function onReply(reply) {
   const overlay = (state.settings && state.settings.overlay) || {};
-  let viewerText = '';
-  if (overlay.showViewerMessage !== false && state.latestViewer && reply.source !== 'operator') {
-    viewerText = `${state.latestViewer.user}说：${state.latestViewer.text}`;
-  }
+  // 原话只取「这条回复真正回的那几条弹幕」；主动搭话 / 主播说话 / 通知 → 没有原话
+  const viewerLines = replyViewerLines(reply);
+  const viewerText =
+    overlay.showViewerMessage !== false && viewerLines.length ? viewerSentence(viewerLines) : '';
   showReply({ text: reply.text || '', viewerText });
 
   flashSpeaking();
@@ -1044,15 +1168,11 @@ function onReply(reply) {
   });
 
   // 念出来：默认只念 AI 的话；开了「连观众原话一起念」就先念原话、停一下再念回复。
-  // 先 stopSpeech 一下：除了打断上一条，也要清掉上一条还没到点的那个停顿等待，
-  // 否则两条回复的朗读会叠在一起
-  stopSpeech();
+  // 排进朗读队列（2026-11-02）：正在念的时候不打断，读完这一句再一句一句读后面的，
+  // 这样"我去查一下"→"查到了…"这类任务播报不会把正在念的话掐断。
   const speechConfig = (state.settings && state.settings.speech) || {};
-  const viewerLine =
-    speechConfig.readViewer && state.latestViewer && reply.source !== 'operator'
-      ? `${state.latestViewer.user}说：${state.latestViewer.text}`
-      : '';
-  speakViewerThenReply(viewerLine, reply.text);
+  const viewerLine = speechConfig.readViewer && viewerLines.length ? viewerSentence(viewerLines) : '';
+  enqueueSpeech({ viewerText: viewerLine, text: reply.text, replyId: reply.id });
 }
 
 // ------------------------------------------------------------ 布局与窗口尺寸
@@ -1851,8 +1971,13 @@ function wire() {
 
   window.api.on.botState((value) => applyBotState(value));
 
+  // 面板里点「念出来」时，先让悬浮窗停掉正在念的回复——不然两个声音会叠在一起。
+  // （停掉也算"这一段念完了"，会顺带放行语音闸门，不会卡住下一批弹幕）
+  if (window.api.on.speechStop) {
+    window.api.on.speechStop(() => stopSpeech());
+  }
+
   window.api.on.danmaku((event) => {
-    state.latestViewer = { user: event.user, text: event.text };
     // 有弹幕进来就醒过来、并重新开始算睡眠时间
     markActivity();
     // 命中触发词的话，这里就把表情切了（markActivity 之后调，见函数注释）

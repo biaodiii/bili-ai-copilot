@@ -91,7 +91,10 @@ function collectMainChannels() {
   const sent = new Set([
     ...[...source.matchAll(/send\(\s*[A-Za-z0-9_.]+,\s*'([^']+)'/g)].map((match) => match[1]),
     ...[...source.matchAll(/broadcast\(\s*'([^']+)'/g)].map((match) => match[1]),
-    ...[...source.matchAll(/sendToOverlay\(\s*'([^']+)'/g)].map((match) => match[1])
+    ...[...source.matchAll(/sendToOverlay\(\s*'([^']+)'/g)].map((match) => match[1]),
+    // 悬浮窗专用的发送助手：channel 是第一个参数（`sendToOverlayIfExists('speech:stop')`），
+    // 它不会因为窗口没开就创建窗口，和普通 send 的签名不同
+    ...[...source.matchAll(/sendToOverlayIfExists\(\s*'([^']+)'/g)].map((match) => match[1])
   ]);
   return { handled, sent };
 }

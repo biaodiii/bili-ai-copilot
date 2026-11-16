@@ -167,7 +167,7 @@ function appendRendererError(text) {
 
 const { SettingsStore, DEFAULT_PERSONA } = require('./settings');
 const { Logger, appendWithRotation } = require('./logger');
-const { Copilot } = require('./copilot');
+const { Copilot, estimateSpeechMs } = require('./copilot');
 const { DeepSeekClient } = require('./llm');
 const { DanmakuRecorder } = require('./danmaku-log');
 const { KnowledgeBase, defaultKnowledgeDir, migrateKnowledgeDir } = require('./knowledge');
@@ -197,7 +197,14 @@ const {
 
 const { BiliLogin } = require('./bili-login');
 const { UsageTracker } = require('./stats');
-const { TtsClient } = require('./tts');
+const {
+  TtsClient,
+  saveAudio: saveTtsAudio,
+  ARCHIVE_DIR_NAME,
+  TTS_TONES,
+  findTone,
+  toneInstruction
+} = require('./tts');
 const { DshRunner, DshSessionRunner, buildTaskPrompt, parseDrafts } = require('./dsh');
 const { attachSessionToWorkspace } = require('./dsh-store');
 // 观众记忆：本场文档 + 老观众名册（纯函数 + 文件层，见模块头注释）
@@ -1391,16 +1398,57 @@ const tts = new TtsClient({
   getConfig: () => store.get().speech.cloud || {},
   logger
 });
+/**
+ * 「念一段话」最近一次合成好的音频（2026-10-21）。
+ * 「先试听、再保存」的意思就是：保存的必须是**刚才试听的那一段**，
+ * 不能等到点保存时再合成一次（那样可能换了音色/多花钱）。
+ * 只留一条，退出程序即丢。
+ */
+let lastSpeechPreview = null;
+/**
+ * 语音存档目录（2026-10-21）：「念一段话 → 保存音频」写到这里。
+ * 和 data/ 放一起：便携版拷走文件夹时录音一起带走；不进知识库（那是资料库，不是录音室）。
+ *
+ * ⚠️ 必须放在 `require('./tts')` **之后**：ARCHIVE_DIR_NAME 是从那个模块解构出来的，
+ * 写在文件顶部会撞上 TDZ（`Cannot access 'ARCHIVE_DIR_NAME' before initialization`）。
+ */
+const VOICE_ARCHIVE_DIR = path.join(APP_ROOT, 'data', ARCHIVE_DIR_NAME);
+/**
+ * 「登录后重连弹幕」的合并开关（2026-11-01 修 bug 加的）。
+ *
+ * B 站登录成功时 `onChanged` 会连着触发两次（登录成功 + 窗口关闭/状态刷新），
+ * 以前每次都会 `stopDanmaku().then(startDanmaku)`；两次几乎同时进来，
+ * 就有两个客户端同时活着 → **同一条弹幕收到 2~3 遍**（弹幕记录里有铁证）。
+ * 现在：同一个 uid 只重连一次，并且把同一批事件合并到一次 600ms 后的重连里。
+ */
+let loginRestartUid = '';
+let loginRestartTimer = null;
 const biliLogin = new BiliLogin({
   store,
   logger,
   onChanged: (status) => {
     broadcast('bili:login', status);
-    // 登录状态变化时，如果正在监听弹幕，自动用新身份重连（这样就能看到昵称了）
-    if (status && status.loggedIn && copilot.client && copilot.client.running) {
-      logger.info('检测到账号登录，正在用登录身份重连弹幕服务器…');
-      copilot.stopDanmaku().then(() => copilot.startDanmaku()).catch(() => {});
+    const loggedIn = Boolean(status && status.loggedIn);
+    if (!loggedIn) {
+      // 退出登录：下次再登录（哪怕还是同一个号）应该重新连一次
+      loginRestartUid = '';
+      return;
     }
+    if (!(copilot.client && copilot.client.running)) return;
+    const uid = String((status && status.userUid) || '');
+    if (uid && uid === loginRestartUid) return; // 同一次登录的重复通知，别再重连
+    loginRestartUid = uid;
+    if (loginRestartTimer) return; // 同一批里已经有一次重连在排队了
+    // 等 600ms 把同一批事件收干，再串行地 stop→start（start/stop 本身也已经排队）
+    loginRestartTimer = setTimeout(() => {
+      loginRestartTimer = null;
+      if (!(copilot.client && copilot.client.running)) return;
+      logger.info('检测到账号登录，正在用登录身份重连弹幕服务器…');
+      copilot
+        .stopDanmaku()
+        .then(() => copilot.startDanmaku())
+        .catch(() => {});
+    }, 600);
   }
 });
 
@@ -1485,6 +1533,8 @@ function createOverlayWindow() {
   });
   overlayWindow.on('closed', () => {
     overlayWindow = null;
+    // 念的人没了：闸门立刻放行，否则要干等到超时
+    copilot.releaseSpeech('overlay-closed');
   });
   if (IS_DEV) overlayWindow.webContents.openDevTools({ mode: 'detach' });
   return overlayWindow;
@@ -1729,6 +1779,11 @@ function applySettingsPatch(partial) {
   if (JSON.stringify(before.overlay) !== JSON.stringify(next.overlay)) {
     applyOverlayConfig(next.overlay);
   }
+  // 语音关掉 / 静音了：正在等的闸门立刻放行（不然要一直等到超时）
+  const speechChanged = JSON.stringify(before.speech) !== JSON.stringify(next.speech);
+  if (speechChanged && (next.speech.enabled !== true || next.speech.muted)) {
+    copilot.releaseSpeech(next.speech.enabled !== true ? 'speech-off' : 'muted');
+  }
   // 观众记忆的开关/参数变了：开 → 新建本场文件，关 → 收尾（并广播状态给面板）
   if (JSON.stringify(before.viewerMemory) !== JSON.stringify(next.viewerMemory)) {
     syncMemoryFeature();
@@ -1757,6 +1812,31 @@ function pushLogHistory() {
 
 // ---------------------------------------------------------------- 事件转发
 
+/**
+ * 这条回复要不要「等语音念完再处理下一批弹幕」（2026-10-21 主播要求）。
+ *
+ * 只拦**弹幕队列**：主播自己说的话、主动搭话、程序通知都照旧优先，不等语音。
+ * 条件：开了语音、没静音、悬浮窗开着（有人念）、这条是回弹幕、正文非空。
+ * 不满足就完全按原来的节奏跑——没开语音的用户行为一点不变。
+ */
+function holdForSpeechIfNeeded(reply) {
+  try {
+    const speech = store.get().speech || {};
+    if (speech.enabled !== true || speech.muted) return;
+    if (!reply || reply.source !== 'danmaku') return;
+    if (!overlayWanted || !overlayWindow || overlayWindow.isDestroyed()) return;
+    const text = String(reply.text || '').trim();
+    if (!text) return;
+    const viewerText = (Array.isArray(reply.viewer) ? reply.viewer : [])
+      .map((item) => `${item.user || '观众'}说：${item.text || ''}`)
+      .join(' ');
+    copilot.holdForSpeech(reply.id, estimateSpeechMs(`${viewerText} ${text}`));
+  } catch (error) {
+    // 闸门挂不上顶多退回旧行为（不等语音），绝不能影响回复本身
+    bootLog(`语音闸门没挂上（不影响回复）：${error.message}`);
+  }
+}
+
 function wireEvents() {
   logger.onChange((entry) => send(panelWindow, 'log', entry));
 
@@ -1773,6 +1853,8 @@ function wireEvents() {
   copilot.on('reply', (reply) => {
     broadcast('ai:reply', reply);
     if (reply.source === 'operator') send(panelWindow, 'ai:reply', reply);
+    // 语音开着就等它念完再处理下一批弹幕（只拦弹幕队列，见 holdForSpeechIfNeeded）
+    holdForSpeechIfNeeded(reply);
   });
   copilot.on('self-note', (note) => send(panelWindow, 'ai:selfNote', note));
   // 她开口问了主播一句「要不要去查 / 记」：记一笔启动日志（面板靠 research:changed + 她的那句话看到）
@@ -2065,6 +2147,137 @@ function registerIpc() {
   ipcMain.handle('tts:clearCache', () => {
     tts.clearCache();
     return tts.status();
+  });
+  // ---- 念一段话 / 存成音频（2026-10-21；2026-11-14 加语气）----
+  // 「先试听、再保存」：预览时把音频留在 lastSpeechPreview 里，保存写的就是它，
+  // 不会因为换了音色/改了文本而偷偷再花一次钱。
+  //
+  // 语气（2026-11-14 主播要求：能自己调输出的感情）：
+  //   options = { tone, customInstruction }
+  //   tone 是 TTS_TONES 里的 id；`custom` 时用 customInstruction。
+  //   预设文案以主进程为准（面板传的 instruction 不采信，防止被改坏）。
+  ipcMain.handle('tts:preview', async (_event, text, options) => {
+    const content = String(text || '').trim();
+    if (!content) return { ok: false, message: '先写点要念的内容' };
+    if (content.length > 2000) return { ok: false, message: '一次最多 2000 字，太长了拆开念' };
+    const tone = findTone(options && options.tone);
+    const instruction = toneInstruction(tone.id, options && options.customInstruction);
+    // 面板马上要出声了：让悬浮窗先停掉正在念的回复，别两个声音叠在一起
+    // （停掉也算"这一段念完了"，会顺带放行语音闸门，不会卡住下一批弹幕）
+    sendToOverlayIfExists('speech:stop');
+    try {
+      const result = await tts.synthesize(content, { tone: tone.id, instruction });
+      lastSpeechPreview = {
+        text: content,
+        audio: result.audio,
+        mime: result.mime || 'audio/wav',
+        // 模型不支持语气时 instruction 会被 tts 丢掉，这里存实际用上的值
+        instruction: result.instruction || '',
+        toneLabel: tone.label,
+        at: Date.now()
+      };
+      return {
+        ok: true,
+        audio: result.audio,
+        mime: result.mime,
+        cached: Boolean(result.cached),
+        tone: tone.id,
+        toneLabel: tone.label,
+        instruction: result.instruction || ''
+      };
+    } catch (error) {
+      lastSpeechPreview = null;
+      return { ok: false, message: error.message, code: error.code || '' };
+    }
+  });
+  ipcMain.handle('tts:saveLast', () => {
+    if (!lastSpeechPreview) {
+      return { ok: false, message: '还没有念过内容：先点「念出来」听一遍，再点保存' };
+    }
+    try {
+      const saved = saveTtsAudio(VOICE_ARCHIVE_DIR, lastSpeechPreview);
+      bootLog(`语音存档：${path.basename(saved.file)}（${Math.round(saved.bytes / 1024)}KB）`);
+      return { ok: true, ...saved };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  });
+  ipcMain.handle('tts:openArchive', async () => {
+    try {
+      fs.mkdirSync(VOICE_ARCHIVE_DIR, { recursive: true });
+      const error = await shell.openPath(VOICE_ARCHIVE_DIR);
+      if (error) return { ok: false, message: error, dir: VOICE_ARCHIVE_DIR };
+      return { ok: true, dir: VOICE_ARCHIVE_DIR };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  });
+  // 「让模型写一句」：只借大模型写台词，不经过直播回复链路（不进上下文、不占回复节奏）。
+  // 2026-11-14 起同时让它挑一个语气（返回 JSON：{line, tone}），面板会把语气下拉也切过去，
+  // 用户不满意还能自己改——模型只提议，人拍板（和全项目一个原则）。
+  ipcMain.handle('tts:writeLine', async (_event, prompt) => {
+    const ask = String(prompt || '').trim();
+    if (!ask) return { ok: false, message: '先写一句要求（比如：用开心的语气说一句开场白）' };
+    const toneList = TTS_TONES.filter((tone) => tone.id !== 'custom')
+      .map((tone) => `${tone.id}（${tone.label}）`)
+      .join('、');
+    try {
+      const result = await editLlm.chat(
+        [
+          {
+            role: 'system',
+            content:
+              '你是直播间里的 AI 搭档。按主播的要求写一句自然的中文口语台词，并从语气列表里挑一个最合适的。' +
+              '只输出 JSON，不要解释、不要 Markdown：' +
+              '{"line":"台词本身（最多 60 字，不要引号、不要表情标记或括号动作）","tone":"语气 id"}'
+          },
+          { role: 'user', content: `${ask}\n\n语气 id 只能从这些里选：${toneList}` }
+        ],
+        { thinking: 'off', maxTokens: 0, temperature: 0.9, timeoutMs: 30000 }
+      );
+      const raw = String((result && result.content) || '');
+      let line = '';
+      let tone = 'natural';
+      // 模型偶尔会包 ```json 或加解释：只取第一个 { … } 试解析，失败就整段当台词（旧行为兜底）
+      try {
+        const cleaned = raw.replace(/```(?:json)?/gi, '').trim();
+        const start = cleaned.indexOf('{');
+        const end = cleaned.lastIndexOf('}');
+        const parsed = start >= 0 && end > start ? JSON.parse(cleaned.slice(start, end + 1)) : null;
+        if (parsed) {
+          line = String(parsed.line || parsed.text || '');
+          tone = String(parsed.tone || 'natural');
+        }
+      } catch (_) {
+        /* 交给下面的兜底 */
+      }
+      if (!line) line = raw;
+      line = line
+        .replace(/^["'「『]+|["'」』]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200);
+      if (!line) return { ok: false, message: '模型这次没写出内容，换个说法再试' };
+      // 只认列表里的语气；模型乱写（或不认识）就落到「自然」
+      const toneId = findTone(tone).id === tone && tone !== 'custom' ? tone : 'natural';
+      return { ok: true, text: line, tone: toneId };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  });
+  // ---- 语音串行化（2026-10-21）----
+  // 悬浮窗念完一条回复就报一次「done」，主进程据此放行下一批弹幕。
+  // 念不出来（没系统语音 / 云端失败且不回退）报 failed，立刻放行——
+  // 宁可不等也不能把回复链路卡死。
+  ipcMain.handle('speech:done', (_event, replyId) => {
+    const released = copilot.releaseSpeech('done');
+    if (released) logger.debug(`语音念完，放行下一批弹幕（${String(replyId || '')}）`);
+    return { ok: true, released };
+  });
+  ipcMain.handle('speech:failed', (_event, replyId, reason) => {
+    const released = copilot.releaseSpeech('failed');
+    bootLog(`语音没念出来（${String(reason || 'unknown')}${replyId ? `，${replyId}` : ''}），先放行下一批弹幕`);
+    return { ok: true, released };
   });
   ipcMain.handle('copilot:history', () => copilot.recentHistory(20));
 

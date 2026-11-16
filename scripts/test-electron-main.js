@@ -750,8 +750,8 @@ function readLog() {
     const update = electron._ipcHandlers.get('settings:update');
     const before = await get();
     assert(typeof before === 'object' && before.api, 'settings:get 返回结构不对');
-    const after = await update(null, { danmaku: { roomId: '1234567' } });
-    assert(after.danmaku.roomId === '1234567', 'settings:update 没有写入房间号');
+    const after = await update(null, { danmaku: { roomId: '123456789' } });
+    assert(after.danmaku.roomId === '123456789', 'settings:update 没有写入房间号');
     const info = await electron._ipcHandlers.get('app:info')();
     assert(info.settingsFile.endsWith('settings.json'), `app:info 配置路径不对: ${info.settingsFile}`);
     // 主进程把 userData 指向了「程序目录/data」，所以配置和日志都应在那里
@@ -769,7 +769,7 @@ function readLog() {
     }
     // 配置应该真的落盘了
     const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8'));
-    assert(saved.danmaku.roomId === '1234567', '配置没有写入文件');
+    assert(saved.danmaku.roomId === '123456789', '配置没有写入文件');
     void record;
   });
 
@@ -2593,6 +2593,233 @@ function readLog() {
       assert(fs.existsSync(path.join(tempRoot, '知识库')), '知识库要建在程序根目录下（不是 resources/app）');
       assert(!fs.existsSync(path.join(tempRoot, 'resources')), '不该在根目录里造出 resources');
     } finally {
+      try {
+        if (exported) exported.copilot.pause('测试收尾');
+      } catch (_) {
+        /* ignore */
+      }
+      if (backup === undefined) delete process.env.DSH_APP_ROOT;
+      else process.env.DSH_APP_ROOT = backup;
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  await test('语音串行化：念完才处理下一批（speech:done 放行），期间弹幕排队不丢', async () => {
+    const booted = await boot({
+      autoShow: true,
+      settings: {
+        api: { apiKey: 'sk-test', baseUrl: 'https://api.deepseek.com' },
+        speech: { enabled: true, muted: false },
+        danmaku: { minIntervalSec: 0, batchWindowMs: 40, maxBatch: 1 }
+      }
+    });
+    const { electron, exported, record } = booted;
+    const originalFetch = global.fetch;
+    const requests = [];
+    global.fetch = async (url, init) => {
+      const body = init && init.body ? JSON.parse(init.body) : {};
+      requests.push(body.messages || []);
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ choices: [{ message: { content: '好的' } }], usage: { prompt_tokens: 10, completion_tokens: 5 } })
+      };
+    };
+    const waitFor = async (check, timeoutMs = 3000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (check()) return true;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      return check();
+    };
+    try {
+      const copilot = exported.copilot;
+      copilot.enqueue({ type: 'danmaku', user: '小明', text: '第一条', ts: Date.now() });
+      copilot.enqueue({ type: 'danmaku', user: '小红', text: '第二条', ts: Date.now() });
+      assert(await waitFor(() => requests.length >= 1), '第一批应该被处理');
+      // 语音开着、还没人上报"念完" → 第二批必须等着
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert(requests.length === 1, `语音没念完不该处理第二批（实际 ${requests.length} 次调用）`);
+      const status = copilot.status();
+      assert(status.speechWaiting === true, `状态里要说在等语音：${JSON.stringify(status.speechWaiting)}`);
+      assert(status.queueLength >= 1, `第二条应该还在排队：${status.queueLength}`);
+
+      // 模拟悬浮窗念完 → 放行
+      const reply = record.sent.filter((entry) => entry.channel === 'ai:reply').pop();
+      const replyId = reply && reply.payload && reply.payload.id;
+      assert(replyId, '要能拿到这条回复的 id');
+      const done = await electron._ipcHandlers.get('speech:done')(null, replyId);
+      assert(done && done.released === true, `放行要被主进程确认：${JSON.stringify(done)}`);
+      assert(await waitFor(() => requests.length >= 2), `放行后要处理第二批（实际 ${requests.length} 次调用）`);
+    } finally {
+      global.fetch = originalFetch;
+      try {
+        exported.copilot.pause('测试收尾');
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  });
+
+  await test('语音串行化：没开语音时完全按原节奏跑，不等', async () => {
+    const booted = await boot({
+      autoShow: true,
+      settings: {
+        api: { apiKey: 'sk-test', baseUrl: 'https://api.deepseek.com' },
+        speech: { enabled: false },
+        danmaku: { minIntervalSec: 0, batchWindowMs: 40, maxBatch: 1 }
+      }
+    });
+    const { exported } = booted;
+    const originalFetch = global.fetch;
+    let calls = 0;
+    global.fetch = async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ choices: [{ message: { content: '好的' } }], usage: { prompt_tokens: 10, completion_tokens: 5 } })
+      };
+    };
+    try {
+      exported.copilot.enqueue({ type: 'danmaku', user: '小明', text: '第一条', ts: Date.now() });
+      exported.copilot.enqueue({ type: 'danmaku', user: '小红', text: '第二条', ts: Date.now() });
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      assert(calls >= 2, `没开语音时两批都该处理：${calls}`);
+      assert(exported.copilot.status().speechWaiting === false, '不该挂语音闸门');
+    } finally {
+      global.fetch = originalFetch;
+      try {
+        exported.copilot.pause('测试收尾');
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  });
+
+  await test('念一段话：云音色按语气合成 → 存 wav+txt（带语气）；让模型写一句会挑语气', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-archive-'));
+    const backup = process.env.DSH_APP_ROOT;
+    process.env.DSH_APP_ROOT = tempRoot;
+    let exported = null;
+    let electron = null;
+    const originalFetch = global.fetch;
+    const ttsBodies = [];
+    try {
+      // 用「打包版路径」的方式把语音配置种进临时根目录（离线，不碰真 Key）
+      // 必须是 qwen-audio 3.x：只有这一族认 input.instruction
+      fs.mkdirSync(path.join(tempRoot, 'data'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempRoot, 'data', 'settings.json'),
+        JSON.stringify({
+          api: { apiKey: 'sk-test', baseUrl: 'https://api.deepseek.com' },
+          speech: {
+            cloud: {
+              apiKey: 'sk-test',
+              baseUrl: 'https://tts.test',
+              model: 'qwen-audio-3.1-tts-flash',
+              voice: 'longanhuan_v3.1'
+            }
+          }
+        }),
+        'utf8'
+      );
+
+      const booted = await boot();
+      exported = booted.exported;
+      electron = booted.electron;
+      global.fetch = async (url, init) => {
+        const body = init && init.body ? JSON.parse(init.body) : {};
+        // 云端 TTS：返回一段假 base64（'RIFF' = 4 字节 wav 头），并记下报文供断言
+        if (body.input || String(url).includes('/tts/')) {
+          ttsBodies.push(body);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ output: { audio: { data: Buffer.from('RIFF').toString('base64') } } })
+          };
+        }
+        // 大模型写一句：故意带上中文引号，并让它挑一个语气（sad）
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({ line: '「用开心的语气说：欢迎来到直播间！」', tone: 'sad' })
+                  }
+                }
+              ],
+              usage: { prompt_tokens: 10, completion_tokens: 8 }
+            })
+        };
+      };
+
+      const preview = electron._ipcHandlers.get('tts:preview');
+      const saveLast = electron._ipcHandlers.get('tts:saveLast');
+      const openArchive = electron._ipcHandlers.get('tts:openArchive');
+      const writeLine = electron._ipcHandlers.get('tts:writeLine');
+
+      // 还没念就保存：必须明确拒绝（不能凭空写个 0 字节文件）
+      const tooEarly = await saveLast();
+      assert(tooEarly && tooEarly.ok === false, `没念过就保存应该失败：${JSON.stringify(tooEarly)}`);
+
+      // 语气：预设「撒娇」→ input.instruction 要进报文
+      const previewed = await preview(null, '欢迎来到直播间', { tone: 'coquettish' });
+      assert(previewed && previewed.ok, `预览应该成功：${JSON.stringify(previewed)}`);
+      assert(previewed.mime === 'audio/wav', `mime 不对：${previewed.mime}`);
+      assert(previewed.tone === 'coquettish', `返回的语气不对：${previewed.tone}`);
+      assert(ttsBodies.length === 1, `应该只发一次 TTS 请求，实际 ${ttsBodies.length}`);
+      assert(
+        String(ttsBodies[0].input.instruction || '').includes('撒娇'),
+        `qwen-audio 要带语气指令：${JSON.stringify(ttsBodies[0].input)}`
+      );
+
+      const saved = await saveLast();
+      assert(saved && saved.ok, `保存应该成功：${JSON.stringify(saved)}`);
+      assert(saved.file.endsWith('.wav'), `要存成 .wav：${saved.file}`);
+      assert(
+        path.resolve(saved.file).startsWith(path.resolve(path.join(tempRoot, 'data', '语音存档'))),
+        `要存到程序根目录的 data\\语音存档：${saved.file}`
+      );
+      assert(fs.existsSync(saved.file), 'wav 文件要真的存在');
+      assert(fs.readFileSync(saved.file).toString() === 'RIFF', '音频内容要原样写进去');
+      assert(saved.textFile && fs.existsSync(saved.textFile), '要有一份同名 .txt');
+      const savedTxt = fs.readFileSync(saved.textFile, 'utf8');
+      assert(savedTxt.includes('欢迎来到直播间'), 'txt 里要存原文');
+      assert(savedTxt.includes('语气：撒娇 —'), `txt 要记下语气：${savedTxt}`);
+
+      // 自定义语气：用用户写的原话当 instruction
+      const custom = await preview(null, '你听过那个故事吗', {
+        tone: 'custom',
+        customInstruction: '压低声音，慢慢说，带点神秘感'
+      });
+      assert(custom && custom.ok, `自定义语气预览应该成功：${JSON.stringify(custom)}`);
+      assert(ttsBodies.length === 2, '换了语气不能命中旧缓存');
+      assert(
+        ttsBodies[1].input.instruction === '压低声音，慢慢说，带点神秘感',
+        `自定义语气要原样发出去：${JSON.stringify(ttsBodies[1].input)}`
+      );
+
+      const opened = await openArchive();
+      assert(opened && opened.ok, `打开存档目录应该成功：${JSON.stringify(opened)}`);
+      assert(opened.dir.startsWith(tempRoot), `目录要在临时根目录下：${opened.dir}`);
+
+      const written = await writeLine(null, '用开心的语气说一句开场白');
+      assert(written && written.ok, `模型写一句应该成功：${JSON.stringify(written)}`);
+      assert(
+        written.text === '用开心的语气说：欢迎来到直播间！',
+        `引号要剥掉、只留台词：${JSON.stringify(written.text)}`
+      );
+      assert(written.tone === 'sad', `模型挑的语气要带回来：${JSON.stringify(written.tone)}`);
+    } finally {
+      global.fetch = originalFetch;
       try {
         if (exported) exported.copilot.pause('测试收尾');
       } catch (_) {

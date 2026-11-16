@@ -494,6 +494,10 @@ function makeFakeSpeech(voices) {
     },
     cancel() {
       record.cancelled += 1;
+      // 真实 Chromium 在 cancel 时会给当前 utterance 补一个 end/error 回调。
+      // 不补的话，「串行朗读队列」等到 cancel 后就永远卡在那一条（测试也测不出队列推进）。
+      const last = spoken[spoken.length - 1];
+      if (last && typeof last.onend === 'function') last.onend();
     },
     addEventListener(type, fn) {
       this._listeners[type] = fn;
@@ -549,7 +553,7 @@ function baseSettings(overrides = {}) {
       // 和正式默认值保持一致（这里原来是 true，但当时还没有这个配置项，等于一个孤儿键）
       locked: false
     },
-    danmaku: { roomId: '1234567', autoStart: true, sessdata: '', useCookie: false, ignoreKeywords: '', maxLength: 120, minIntervalSec: 4, batchWindowMs: 1200, maxBatch: 8, blockedUsers: '', triggerMode: 'all' },
+    danmaku: { roomId: '123456789', autoStart: true, sessdata: '', useCookie: false, ignoreKeywords: '', maxLength: 120, minIntervalSec: 4, batchWindowMs: 1200, maxBatch: 8, blockedUsers: '', triggerMode: 'all' },
     // 主动搭话（2026-10-21 替换冷场暖场）：默认关着，界面要能回填 + 改写
     proactive: {
       enabled: false,
@@ -664,6 +668,7 @@ const FAKE_TTS_MODELS = [
     label: '千问3-TTS-Flash（默认）',
     price: '约 0.8 元/万字符',
     note: '最快最便宜',
+    instruction: false,
     defaultVoice: 'Cherry',
     voices: FAKE_VOICES
   },
@@ -672,9 +677,29 @@ const FAKE_TTS_MODELS = [
     label: 'CosyVoice-v3-Flash',
     price: '1 元/万字符',
     note: '支持声音复刻',
+    instruction: false,
     defaultVoice: 'longanyang',
     voices: [{ voice: 'longanyang', name: '龙安洋', desc: '阳光大男孩（男）' }]
+  },
+  {
+    // 语气下拉只在这类模型下可用（input.instruction）
+    id: 'qwen-audio-3.1-tts-flash',
+    label: 'Qwen-Audio-3.1-TTS-Flash（最新）',
+    price: '按 token 计费',
+    note: '支持语气指令',
+    instruction: true,
+    defaultVoice: 'longanhuan_v3.1',
+    voices: [{ voice: 'longanhuan_v3.1', name: '龙安欢_v3.1', desc: '女 · 多语种+方言' }]
   }
+];
+
+// 语气预设（真实清单在主进程 tts.js；测试只放够断言的几条）
+const FAKE_TONES = [
+  { id: 'natural', label: '自然', instruction: '' },
+  { id: 'happy', label: '开心', instruction: '用开心、轻快的语气说，语速稍快，尾音上扬' },
+  { id: 'coquettish', label: '撒娇', instruction: '用撒娇、软糯的语气说，句尾带一点拖音' },
+  { id: 'sad', label: '难过', instruction: '用难过、低落的语气说，语速放慢，声音低沉' },
+  { id: 'custom', label: '自定义', instruction: '' }
 ];
 
 /**
@@ -719,6 +744,11 @@ function makeApi(settings, hooks = null) {
   const calls = [];
   // 测试可以改它来模拟云端语音失败：api._tts = { ok: false, message: '...' }
   const ttsBehaviour = { ok: true, voices: FAKE_VOICES, models: FAKE_TTS_MODELS };
+  // 语音存档（2026-10-21）三块独立行为，测试按需改：
+  //   api._ttsPreview = { ok: false } / api._ttsSave = { ok: false } / api._ttsWrite = { text }
+  const ttsPreviewBehaviour = { ok: true, cached: false };
+  const ttsSaveBehaviour = { ok: true };
+  const ttsWriteBehaviour = { ok: true, text: '用开心的语气说：欢迎来到直播间！' };
   // 知识库的假数据：默认空库，测试可以往里塞条目 / 命中结果
   const knowledgeBehaviour = {
     items: [],
@@ -821,6 +851,9 @@ function makeApi(settings, hooks = null) {
     _handlers: handlers,
     _calls: calls,
     _tts: ttsBehaviour,
+    _ttsPreview: ttsPreviewBehaviour,
+    _ttsSave: ttsSaveBehaviour,
+    _ttsWrite: ttsWriteBehaviour,
     _knowledge: knowledgeBehaviour,
     _research: researchBehaviour,
     _dsh: dshBehaviour,
@@ -891,9 +924,71 @@ function makeApi(settings, hooks = null) {
           voice: (settings.speech && settings.speech.cloud && settings.speech.cloud.voice) || 'Cherry',
           cached: 0,
           models: ttsBehaviour.models === undefined ? FAKE_TTS_MODELS : ttsBehaviour.models,
+          tones: ttsBehaviour.tones === undefined ? FAKE_TONES : ttsBehaviour.tones,
           voices: ttsBehaviour.voices === undefined ? FAKE_VOICES : ttsBehaviour.voices
         }),
-      clearCache: () => Promise.resolve({ available: true, cached: 0 })
+      clearCache: () => Promise.resolve({ available: true, cached: 0 }),
+      // 「念一段话 / 存成音频」（2026-10-21；2026-11-14 加语气）
+      preview: (text, options) => {
+        calls.push({ name: 'tts.preview', args: [text, options] });
+        if (!ttsPreviewBehaviour.ok) {
+          return Promise.resolve({ ok: false, message: ttsPreviewBehaviour.message || '云端合成失败' });
+        }
+        const toneId = (options && options.tone) || 'natural';
+        const tone = FAKE_TONES.find((item) => item.id === toneId);
+        const instruction =
+          toneId === 'custom'
+            ? String((options && options.customInstruction) || '')
+            : (tone && tone.instruction) || '';
+        return Promise.resolve({
+          ok: true,
+          audio: 'RkFLRUFVRElP',
+          mime: 'audio/wav',
+          cached: Boolean(ttsPreviewBehaviour.cached),
+          tone: toneId,
+          toneLabel: (tone && tone.label) || '',
+          instruction
+        });
+      },
+      saveLast: () => {
+        calls.push({ name: 'tts.saveLast', args: [] });
+        if (!ttsSaveBehaviour.ok) {
+          return Promise.resolve({ ok: false, message: ttsSaveBehaviour.message || '还没有念过内容' });
+        }
+        return Promise.resolve({
+          ok: true,
+          file: 'D:\\demo\\data\\语音存档\\2026-10-31_15-02-11 欢迎来到直播间.wav',
+          textFile: 'D:\\demo\\data\\语音存档\\2026-10-31_15-02-11 欢迎来到直播间.txt',
+          bytes: 1234,
+          dir: 'D:\\demo\\data\\语音存档'
+        });
+      },
+      openArchive: () => {
+        calls.push({ name: 'tts.openArchive', args: [] });
+        return Promise.resolve({ ok: true, dir: 'D:\\demo\\data\\语音存档' });
+      },
+      writeLine: (prompt) => {
+        calls.push({ name: 'tts.writeLine', args: [prompt] });
+        if (!ttsWriteBehaviour.ok) {
+          return Promise.resolve({ ok: false, message: ttsWriteBehaviour.message || '模型这次没写出内容' });
+        }
+        return Promise.resolve({
+          ok: true,
+          text: ttsWriteBehaviour.text,
+          tone: ttsWriteBehaviour.tone || 'natural'
+        });
+      }
+    },
+    // 语音串行化（2026-10-21）：悬浮窗念完 / 念不出来时回报主进程，测试记录调用
+    speech: {
+      done: (replyId) => {
+        calls.push({ name: 'speech.done', args: [replyId] });
+        return Promise.resolve({ ok: true, released: true });
+      },
+      failed: (replyId, reason) => {
+        calls.push({ name: 'speech.failed', args: [replyId, reason] });
+        return Promise.resolve({ ok: true, released: true });
+      }
     },
     bili: {
       status: () => Promise.resolve({ loggedIn: false, userName: '', userUid: '' }),
@@ -1199,8 +1294,7 @@ function makeApi(settings, hooks = null) {
     'status',
     'danmaku',
     'danmakuFiltered',
-    'reply',
-    'thinking',
+    'reply',    'thinking',
     'botState',
     'overlayConfig',
     'overlayRelayout',
@@ -1219,6 +1313,7 @@ function makeApi(settings, hooks = null) {
     'knowledgeChanged',
     'knowledgeReview',
     'memoryChanged',
+    'speechStop',
     'draftsReady'
   ]) {
     api.on[name] = (fn) => {
@@ -2269,7 +2364,15 @@ test('语音朗读：连观众原话时，念完原话停 0.5 秒再念回复', 
   await ready();
   speech.record.spoken.length = 0;
   api.emit('danmaku', { user: '小明', text: '你好', ts: Date.now() });
-  api.emit('reply', { id: 'r1', ts: Date.now(), text: '你好呀', emotion: 'happy', source: 'danmaku' });
+  // 原话由 reply.viewer 带过来（2026-10-21 起不再读"最后一条弹幕"）
+  api.emit('reply', {
+    id: 'r1',
+    ts: Date.now(),
+    text: '你好呀',
+    emotion: 'happy',
+    source: 'danmaku',
+    viewer: [{ user: '小明', text: '你好' }]
+  });
 
   // 第一步：只念观众原话，不把回复也念出来
   if (speech.record.spoken.length !== 1) {
@@ -2306,7 +2409,14 @@ test('语音朗读：没开「连观众原话一起念」时，不念原话也�
   await ready();
   speech.record.spoken.length = 0;
   api.emit('danmaku', { user: '小明', text: '你好', ts: Date.now() });
-  api.emit('reply', { id: 'r1', ts: Date.now(), text: '你好呀', emotion: 'happy', source: 'danmaku' });
+  api.emit('reply', {
+    id: 'r1',
+    ts: Date.now(),
+    text: '你好呀',
+    emotion: 'happy',
+    source: 'danmaku',
+    viewer: [{ user: '小明', text: '你好' }]
+  });
   // 回复要立刻念出来，不能因为「先念原话」那条路径而多等这半秒
   if (speech.record.spoken.length !== 1) {
     throw new Error(`应该直接念回复，实际念了 ${speech.record.spoken.length} 条`);
@@ -2318,43 +2428,63 @@ test('语音朗读：没开「连观众原话一起念」时，不念原话也�
   if (speech.record.spoken.length !== 1) throw new Error('没开原话朗读时不该再多念一条');
 });
 
-test('语音朗读：等停顿的期间被打断，旧回复不会突然念出来', async () => {
+test('语音朗读：等停顿期间来新回复会排队，不会插进停顿里', async () => {
   const { api, speech, ready, timers } = bootOverlay({
     speech: { enabled: true, muted: false, voiceURI: '', rate: 1, pitch: 1, volume: 1, readViewer: true }
   });
   await ready();
   speech.record.spoken.length = 0;
   api.emit('danmaku', { user: '小明', text: '第一句', ts: Date.now() });
-  api.emit('reply', { id: 'r1', ts: Date.now(), text: '回复一', emotion: 'happy', source: 'danmaku' });
+  api.emit('reply', {
+    id: 'r1',
+    ts: Date.now(),
+    text: '回复一',
+    emotion: 'happy',
+    source: 'danmaku',
+    viewer: [{ user: '小明', text: '第一句' }]
+  });
   speech.finishLast(); // 原话念完，进入停顿等待
   await ready();
 
-  // 停顿还没到就来下一条回复：旧的那次朗读必须作废
+  // 停顿还没到就来下一条回复：应该排队，不能插进停顿里
   api.emit('danmaku', { user: '小红', text: '第二句', ts: Date.now() });
-  api.emit('reply', { id: 'r2', ts: Date.now(), text: '回复二', emotion: 'happy', source: 'danmaku' });
-  speech.finishLast(); // 新的原话念完，也进入它自己的停顿等待
-  await ready();
+  api.emit('reply', {
+    id: 'r2',
+    ts: Date.now(),
+    text: '回复二',
+    emotion: 'happy',
+    source: 'danmaku',
+    viewer: [{ user: '小红', text: '第二句' }]
+  });
+  if (speech.record.spoken.length !== 1) {
+    throw new Error(`停顿期间新回复不该插进来：${speech.record.spoken.map((item) => item.text).join(' / ')}`);
+  }
+
+  // 第一步：停顿到点 → 念回复一
   timers.flush();
+  await ready();
+  if (speech.record.spoken[1].text !== '回复一') {
+    throw new Error(`第二条该是回复一：${speech.record.spoken.map((item) => item.text).join(' / ')}`);
+  }
+  speech.finishLast();
+  await ready();
   await ready();
 
+  // 第二步：队列接着念第二条的原话
   const texts = speech.record.spoken.map((item) => item.text);
-  if (texts.includes('回复一')) {
-    throw new Error(`被打断的那次朗读不该把旧回复念出来: ${texts.join(' / ')}`);
+  if (texts[2] !== '小红说：第二句') {
+    throw new Error(`第二条链的原话没按顺序念：${texts.join(' / ')}`);
   }
-  // 最后念的必须是新的这一条链（旧的原话已经被 cancel 掉了）
+  speech.finishLast();
+  await ready();
+  timers.flush(); // 原话和回复之间那 0.5 秒
+  await ready();
   if (speech.record.spoken[speech.record.spoken.length - 1].text !== '回复二') {
-    throw new Error(`最后念的应该是新回复: ${texts.join(' / ')}`);
-  }
-  // 旧的那个停顿计时器如果没清掉，这里还会再冒出一条旧回复
-  const before = speech.record.spoken.length;
-  timers.flush();
-  if (speech.record.spoken.length !== before) {
-    const now = speech.record.spoken.map((item) => item.text).join(' / ');
-    throw new Error(`旧回复的等待计时器没被清掉: ${now}`);
+    throw new Error(`最后该是回复二：${speech.record.spoken.map((item) => item.text).join(' / ')}`);
   }
 });
 
-test('语音朗读：新回复会打断正在念的内容', async () => {
+test('语音朗读：新回复不会打断正在念的内容，会按顺序排队', async () => {
   const { api, speech, ready } = bootOverlay({
     speech: { enabled: true, muted: false, voiceURI: '', rate: 1, pitch: 1, volume: 1, readViewer: false }
   });
@@ -2363,11 +2493,19 @@ test('语音朗读：新回复会打断正在念的内容', async () => {
   speech.record.spoken.length = 0;
   speech.record.cancelled = 0;
   api.emit('reply', { id: 'r1', ts: Date.now(), text: '第一句', emotion: 'happy', source: 'danmaku' });
+  const cancelledBefore = speech.record.cancelled;
   api.emit('reply', { id: 'r2', ts: Date.now(), text: '第二句', emotion: 'happy', source: 'danmaku' });
-  if (speech.record.spoken.length !== 2) throw new Error(`两条都应该朗读，实际 ${speech.record.spoken.length}`);
-  // 每次朗读前会 cancel 掉上一条
-  if (speech.record.cancelled < 2) throw new Error(`新回复应先取消旧朗读，cancel 次数 ${speech.record.cancelled}`);
-  if (speech.record.spoken[1].text !== '第二句') throw new Error('最后念的应该是新回复');
+  if (speech.record.spoken.length !== 1) {
+    throw new Error(`第二条应该排队，实际已经念了 ${speech.record.spoken.length} 条`);
+  }
+  if (speech.record.spoken[0].text !== '第一句') throw new Error(`先念第一条：${speech.record.spoken[0].text}`);
+  if (speech.record.cancelled !== cancelledBefore) {
+    throw new Error(`排队不该 cancel 正在念的内容（cancel ${cancelledBefore} → ${speech.record.cancelled}）`);
+  }
+  speech.finishLast();
+  await ready();
+  if (speech.record.spoken.length !== 2) throw new Error('第一条念完应该接着念第二条');
+  if (speech.record.spoken[1].text !== '第二句') throw new Error('念的顺序不对');
 });
 
 test('语音不可用时不会报错，界面仍然正常', async () => {
@@ -2383,6 +2521,105 @@ test('语音不可用时不会报错，界面仍然正常', async () => {
     throw new Error('语音不可用时回复文本仍应正常显示');
   }
   if (!dom.nodes.get('speechEnabled').disabled) throw new Error('语音不可用时开关应置灰');
+});
+
+test('语音朗读：主动搭话 / 程序通知不念观众原话（只有回弹幕才念）', async () => {
+  const { api, speech, ready } = bootOverlay({
+    speech: { enabled: true, muted: false, voiceURI: '', rate: 1, pitch: 1, volume: 1, readViewer: true }
+  });
+  await ready();
+  speech.record.spoken.length = 0;
+  // 先来一条弹幕：以前这里会把它的原文当成"最后一条"，然后主动搭话时念出来
+  api.emit('danmaku', { user: '小明', text: '刚说过的话', ts: Date.now() });
+  api.emit('reply', { id: 'p1', ts: Date.now(), text: '你们在玩什么呀', emotion: 'happy', source: 'proactive', viewer: [] });
+  if (speech.record.spoken.length !== 1) {
+    throw new Error(`主动搭话只该念回复本身，实际念了 ${speech.record.spoken.length} 条`);
+  }
+  if (speech.record.spoken[0].text !== '你们在玩什么呀') {
+    throw new Error(`主动搭话不该念观众原话：${speech.record.spoken[0].text}`);
+  }
+  // 程序通知（copilot.say）连 viewer 字段都没有，同样不许念；
+  // 2026-11-02 起它是排队等上一条念完的，不会插进来
+  api.emit('reply', { id: 'n1', ts: Date.now(), text: '有个东西要不要我去查', emotion: 'happy', source: 'notice' });
+  if (speech.record.spoken.length !== 1) {
+    throw new Error(`通知应该排在主动搭话后面，不该插进来：${speech.record.spoken.length} 条`);
+  }
+  speech.finishLast();
+  await ready();
+  if (speech.record.spoken[1].text !== '有个东西要不要我去查') {
+    throw new Error(`通知不该念观众原话：${speech.record.spoken[1] && speech.record.spoken[1].text}`);
+  }
+});
+
+test('语音朗读：合并了多条弹幕时，原话全部念出来（用「；」连起来）', async () => {
+  const { api, speech, ready } = bootOverlay({
+    speech: { enabled: true, muted: false, voiceURI: '', rate: 1, pitch: 1, volume: 1, readViewer: true }
+  });
+  await ready();
+  speech.record.spoken.length = 0;
+  api.emit('reply', {
+    id: 'r1',
+    ts: Date.now(),
+    text: '一起回答',
+    emotion: 'happy',
+    source: 'danmaku',
+    viewer: [
+      { user: '小明', text: '多少钱' },
+      { user: '阿强', text: '有现货吗' }
+    ]
+  });
+  if (speech.record.spoken[0].text !== '小明说：多少钱；阿强说：有现货吗') {
+    throw new Error(`多条原话要全部念出来：${speech.record.spoken[0].text}`);
+  }
+});
+
+test('语音朗读：念完上报 speech.done；被面板「念出来」打断会上报并清空排队', async () => {
+  const { api, speech, ready } = bootOverlay({
+    speech: { enabled: true, muted: false, voiceURI: '', rate: 1, pitch: 1, volume: 1, readViewer: false }
+  });
+  await ready();
+  api._calls.length = 0;
+  api.emit('reply', { id: 'r1', ts: Date.now(), text: '一句话', emotion: 'happy', source: 'danmaku', viewer: [] });
+  speech.finishLast();
+  await ready();
+  await ready();
+  const done = api._calls.filter((call) => call.name === 'speech.done');
+  if (!done.length) throw new Error('念完没有上报 speech.done');
+  if (done[done.length - 1].args[0] !== 'r1') {
+    throw new Error(`上报的 replyId 不对：${JSON.stringify(done[done.length - 1].args)}`);
+  }
+
+  // 正在念 r2、r3 在排队时，主播在面板点了「念出来」（主进程发 speech:stop）：
+  // 必须把当前这条上报掉、并把排队清空——否则主进程会干等到超时、队列还会继续念
+  api._calls.length = 0;
+  speech.record.spoken.length = 0;
+  api.emit('reply', { id: 'r2', ts: Date.now(), text: '第二句', emotion: 'happy', source: 'danmaku', viewer: [] });
+  api.emit('reply', { id: 'r3', ts: Date.now(), text: '第三句', emotion: 'happy', source: 'danmaku', viewer: [] });
+  api.emit('speechStop');
+  await ready();
+  const ids = api._calls.filter((call) => call.name === 'speech.done').map((call) => call.args[0]);
+  if (!ids.includes('r2')) throw new Error(`被打断的那条也要上报：${JSON.stringify(ids)}`);
+  if (speech.record.spoken.length !== 1) {
+    throw new Error(`被打断后排队的第三句不该再念：${speech.record.spoken.map((item) => item.text).join(' / ')}`);
+  }
+});
+
+test('语音朗读：静音会清空还没念的排队', async () => {
+  const { api, speech, ready } = bootOverlay({
+    speech: { enabled: true, muted: false, voiceURI: '', rate: 1, pitch: 1, volume: 1, readViewer: false }
+  });
+  await ready();
+  speech.record.spoken.length = 0;
+  api.emit('reply', { id: 'r1', ts: Date.now(), text: '第一句', emotion: 'happy', source: 'danmaku' });
+  api.emit('reply', { id: 'r2', ts: Date.now(), text: '第二句', emotion: 'happy', source: 'danmaku' });
+  // 静音：applySettings 发现 speech 变了会 stopSpeech → 队列清空
+  api.emit('settingsChanged', baseSettings({ speech: { enabled: true, muted: true, voiceURI: '', rate: 1, pitch: 1, volume: 1, readViewer: false } }));
+  await ready();
+  speech.finishLast(); // 被取消的那条补上结束回调
+  await ready();
+  if (speech.record.spoken.length !== 1) {
+    throw new Error(`静音后排队不该再念：${speech.record.spoken.map((item) => item.text).join(' / ')}`);
+  }
 });
 
 // ---------------------------------------------------------------- 悬浮窗对话区
@@ -2925,16 +3162,34 @@ function bootPanel(settingsOverrides = {}) {
   sandbox.window.requestAnimationFrame = timers.requestAnimationFrame;
   sandbox.window.speechSynthesis = panelSpeech.synth;
   sandbox.window.SpeechSynthesisUtterance = panelSpeech.FakeUtterance;
+  // 面板里的「念一段话」用 new Audio(...) 播云音色：给个假的记录器
+  const audios = [];
+  class PanelAudio {
+    constructor(src) {
+      this.src = src;
+      this.paused = false;
+      audios.push(this);
+    }
+    play() {
+      this.paused = false;
+      return Promise.resolve();
+    }
+    pause() {
+      this.paused = true;
+    }
+  }
+  sandbox.window.Audio = PanelAudio;
+  sandbox.Audio = PanelAudio;
   dom.window.api = api;
   runScripts(sandbox, ['src/shared/emotions.js', 'src/renderer/panel/panel.js']);
-  return { dom, api, settings, sandbox, timers, speech: panelSpeech, ready: () => drain(10) };
+  return { dom, api, settings, sandbox, timers, speech: panelSpeech, audios, ready: () => drain(10) };
 }
 
 test('panel.js 能初始化并填好设置值', async () => {
   const { dom, ready } = bootPanel();
   await ready();
   const roomInput = dom.nodes.get('roomId');
-  if (roomInput.value !== '1234567') throw new Error(`房间号没有回填: "${roomInput.value}"`);
+  if (roomInput.value !== '123456789') throw new Error(`房间号没有回填: "${roomInput.value}"`);
   const model = dom.nodes.get('model');
   if (model.value !== 'deepseek-flash') throw new Error(`模型没有回填: "${model.value}"`);
 });
@@ -3033,13 +3288,13 @@ test('连接状态会更新顶栏徽标', async () => {
   const { dom, api, ready } = bootPanel();
   await ready();
   api.emit('status', {
-    danmaku: { running: true, connected: true, realRoomId: '1234567' },
+    danmaku: { running: true, connected: true, realRoomId: '123456789' },
     queueLength: 2,
     stats: {}
   });
   const pill = dom.nodes.get('danmakuPill');
   const label = pill.children.find((c) => c.tagName === 'SPAN');
-  if (!label || !label.textContent.includes('1234567')) throw new Error(`徽标文案不正确: ${label && label.textContent}`);
+  if (!label || !label.textContent.includes('123456789')) throw new Error(`徽标文案不正确: ${label && label.textContent}`);
   const queue = dom.nodes.get('queuePill');
   const queueSpan = queue.children.find((c) => c.tagName === 'SPAN');
   if (!queueSpan || queueSpan.textContent !== '队列 2') throw new Error(`队列显示不正确: ${queueSpan && queueSpan.textContent}`);
@@ -3049,14 +3304,14 @@ test('房间信息（主播名/标题）会显示在标题栏', async () => {
   const { dom, api, ready } = bootPanel();
   await ready();
   api.emit('roomInfo', {
-    realRoomId: '1234567',
+    realRoomId: '123456789',
     anchorName: '测试观众',
-    title: '今晚八点开播真的假的，卧槽真开播了',
+    title: '测试直播间开播了',
     areaText: '生活 / 生活杂谈',
     liveStatus: 1
   });
   const label = dom.nodes.get('roomLabel').textContent;
-  if (!label.includes('测试观众') || !label.includes('今晚八点开播')) throw new Error(`标题栏信息不完整: ${label}`);
+  if (!label.includes('测试观众') || !label.includes('测试直播间开播了')) throw new Error(`标题栏信息不完整: ${label}`);
 });
 
 test('未登录时账号卡片显示未登录', async () => {
@@ -3114,11 +3369,11 @@ test('自动暂停会更新状态徽标', async () => {
 test('登录后账号卡片显示昵称', async () => {
   const { dom, api, ready } = bootPanel();
   await ready();
-  api.emit('biliLogin', { loggedIn: true, userName: '测试观众', userUid: '10001', avatar: '' });
+  api.emit('biliLogin', { loggedIn: true, userName: '测试观众', userUid: '100000001', avatar: '' });
   const name = dom.nodes.get('accountName').textContent;
   if (name !== '测试观众') throw new Error(`账号名显示不正确: ${name}`);
   const sub = dom.nodes.get('accountSub').textContent;
-  if (!sub.includes('10001')) throw new Error(`uid 没有显示: ${sub}`);
+  if (!sub.includes('100000001')) throw new Error(`uid 没有显示: ${sub}`);
 });
 
 test('修改输入框会触发设置保存（带防抖）', async () => {
@@ -3662,6 +3917,177 @@ test('语音页：Key 输入是防窥的，能点开看', async () => {
   if (key.type !== 'text') throw new Error('点显示后应该变成明文');
   dom.nodes.get('toggleTtsKey').dispatch('click');
   if (key.type !== 'password') throw new Error('再点一次应该变回密码框');
+});
+
+test('念一段话：云音色下能试听、能保存，系统语音下保存置灰（2026-10-21）', async () => {
+  // 云音色：点「念出来」→ tts.preview → 面板用 Audio 播；保存按钮在这之后才可点
+  const cloud = bootPanel({
+    speech: { enabled: true, muted: false, engine: 'cloud', readViewer: false }
+  });
+  await cloud.ready();
+  const cloudDom = cloud.dom;
+  const cloudApi = cloud.api;
+  if (!cloudDom.nodes.get('speakText') || !cloudDom.nodes.get('speakPlay')) {
+    throw new Error('语音页缺少「念一段话」这张卡片');
+  }
+  if (!cloudDom.nodes.get('speakSave').disabled) {
+    throw new Error('还没念过内容时「保存这条」应该是灰的');
+  }
+  cloudApi._calls.length = 0;
+  cloudDom.nodes.get('speakText').value = '欢迎来到直播间';
+  cloudDom.nodes.get('speakPlay').dispatch('click');
+  await drain(12);
+  const preview = cloudApi._calls.filter((call) => call.name === 'tts.preview').pop();
+  if (!preview || preview.args[0] !== '欢迎来到直播间') {
+    throw new Error(`念出来应该调 tts.preview 并带上文本：${JSON.stringify(preview && preview.args)}`);
+  }
+  if (!cloud.audios.length) throw new Error('应该创建 Audio 播放云音色');
+  if (!String(cloud.audios[0].src).startsWith('data:audio/wav;base64,')) {
+    throw new Error(`音频 dataURL 不对：${cloud.audios[0].src}`);
+  }
+  if (cloudDom.nodes.get('speakSave').disabled) throw new Error('念过之后「保存这条」该可点');
+  cloudApi._calls.length = 0;
+  cloudDom.nodes.get('speakSave').dispatch('click');
+  await drain(10);
+  if (!cloudApi._calls.some((call) => call.name === 'tts.saveLast')) throw new Error('没走 tts.saveLast');
+  if (!cloudDom.nodes.get('toastWrap').textContent.includes('已保存')) {
+    throw new Error(`保存后要报路径：${cloudDom.nodes.get('toastWrap').textContent}`);
+  }
+
+  // 系统语音：保存按钮置灰，状态行说明「只能念不能存」，点念出来走本地合成、不调预览接口
+  const system = bootPanel({ speech: { enabled: true, muted: false, engine: 'system', readViewer: false } });
+  await system.ready();
+  const systemDom = system.dom;
+  if (!systemDom.nodes.get('speakSave').disabled) throw new Error('系统语音下「保存这条」必须置灰');
+  if (!systemDom.nodes.get('speakStatus').textContent.includes('不能保存')) {
+    throw new Error(`要说清系统语音存不了：${systemDom.nodes.get('speakStatus').textContent}`);
+  }
+  system.api._calls.length = 0;
+  system.speech.record.spoken.length = 0;
+  systemDom.nodes.get('speakText').value = '系统语音念一句';
+  systemDom.nodes.get('speakPlay').dispatch('click');
+  await drain(10);
+  if (system.api._calls.some((call) => call.name === 'tts.preview')) {
+    throw new Error('系统语音不该去调云端合成');
+  }
+  if (!system.speech.record.spoken.length) throw new Error('系统语音应该真的念了');
+});
+
+test('念一段话：可以让模型写一句填进输入框；打开存档文件夹走 IPC', async () => {
+  const { dom, api, ready } = bootPanel({
+    speech: { enabled: true, muted: false, engine: 'cloud', readViewer: false }
+  });
+  await ready();
+  api._calls.length = 0;
+  dom.nodes.get('speakPrompt').value = '用开心的语气说一句开场白';
+  dom.nodes.get('speakWrite').dispatch('click');
+  await drain(12);
+  const write = api._calls.filter((call) => call.name === 'tts.writeLine').pop();
+  if (!write || write.args[0] !== '用开心的语气说一句开场白') {
+    throw new Error(`让模型写要带上要求：${JSON.stringify(write && write.args)}`);
+  }
+  if (dom.nodes.get('speakText').value !== '用开心的语气说：欢迎来到直播间！') {
+    throw new Error(`模型写的句子要填进输入框：${dom.nodes.get('speakText').value}`);
+  }
+  // 换了文本就还没念过 → 保存又变灰（避免存下来的不是屏幕上这句）
+  if (!dom.nodes.get('speakSave').disabled) throw new Error('换了文本后保存应该重新置灰');
+  api._calls.length = 0;
+  dom.nodes.get('speakOpenArchive').dispatch('click');
+  await drain(10);
+  if (!api._calls.some((call) => call.name === 'tts.openArchive')) throw new Error('没走 tts.openArchive');
+});
+
+test('念一段话：可选语气，云音色会把语气一起送给合成接口（2026-11-14）', async () => {
+  const { dom, api, ready } = bootPanel({
+    speech: {
+      enabled: true,
+      muted: false,
+      engine: 'cloud',
+      readViewer: false,
+      cloud: { model: 'qwen-audio-3.1-tts-flash', voice: 'longanhuan_v3.1' }
+    }
+  });
+  await ready();
+  const select = dom.nodes.get('speakTone');
+  if (!select) throw new Error('缺少语气下拉 #speakTone');
+  if (select.disabled) throw new Error('qwen-audio 模型下语气下拉该可用');
+  const values = Array.from(select.children).map((option) => option.value);
+  if (!values.includes('coquettish') || !values.includes('custom')) {
+    throw new Error(`语气预设没填全：${values.join(',')}`);
+  }
+  select.value = 'coquettish';
+  select.dispatch('change');
+  dom.nodes.get('speakText').value = '欢迎来到直播间';
+  api._calls.length = 0;
+  dom.nodes.get('speakPlay').dispatch('click');
+  await drain(12);
+  const call = api._calls.filter((item) => item.name === 'tts.preview').pop();
+  if (!call) throw new Error('没调 tts.preview');
+  const options = call.args[1] || {};
+  if (options.tone !== 'coquettish') throw new Error(`语气没传给主进程：${JSON.stringify(options)}`);
+  if (!dom.nodes.get('speakStatus').textContent.includes('撒娇')) {
+    throw new Error(`状态行要报出语气：${dom.nodes.get('speakStatus').textContent}`);
+  }
+});
+
+test('念一段话：模型不支持语气指令时下拉置灰、并说明换哪个模型', async () => {
+  // 默认模型 qwen3-tts-flash 不认 input.instruction
+  const { dom, ready } = bootPanel({
+    speech: { enabled: true, muted: false, engine: 'cloud', readViewer: false }
+  });
+  await ready();
+  if (!dom.nodes.get('speakTone').disabled) throw new Error('不支持指令的模型下语气下拉必须置灰');
+  if (!dom.nodes.get('speakToneText').disabled) throw new Error('自定义输入框也要一起置灰');
+  const hint = dom.nodes.get('speakToneHint').textContent;
+  if (!hint.includes('不支持语气指令') || !hint.includes('Qwen-Audio-3.1')) {
+    throw new Error(`要说明原因和该换哪个模型：${hint}`);
+  }
+});
+
+test('念一段话：自定义语气要求会原样带给合成接口', async () => {
+  const { dom, api, ready } = bootPanel({
+    speech: {
+      enabled: true,
+      muted: false,
+      engine: 'cloud',
+      readViewer: false,
+      cloud: { model: 'qwen-audio-3.1-tts-flash', voice: 'longanhuan_v3.1' }
+    }
+  });
+  await ready();
+  const select = dom.nodes.get('speakTone');
+  select.value = 'custom';
+  select.dispatch('change');
+  dom.nodes.get('speakToneText').value = '压低声音，慢慢说，带点神秘感';
+  dom.nodes.get('speakText').value = '你听过那个故事吗';
+  api._calls.length = 0;
+  dom.nodes.get('speakPlay').dispatch('click');
+  await drain(12);
+  const call = api._calls.filter((item) => item.name === 'tts.preview').pop();
+  const options = (call && call.args[1]) || {};
+  if (options.tone !== 'custom' || options.customInstruction !== '压低声音，慢慢说，带点神秘感') {
+    throw new Error(`自定义语气没传全：${JSON.stringify(options)}`);
+  }
+});
+
+test('念一段话：让模型写一句时，它挑的语气会填进下拉', async () => {
+  const { dom, api, ready } = bootPanel({
+    speech: {
+      enabled: true,
+      muted: false,
+      engine: 'cloud',
+      readViewer: false,
+      cloud: { model: 'qwen-audio-3.1-tts-flash', voice: 'longanhuan_v3.1' }
+    }
+  });
+  await ready();
+  api._ttsWrite.tone = 'sad';
+  dom.nodes.get('speakPrompt').value = '说一句离别的话';
+  dom.nodes.get('speakWrite').dispatch('click');
+  await drain(12);
+  if (dom.nodes.get('speakTone').value !== 'sad') {
+    throw new Error(`模型挑的语气没填进下拉：${dom.nodes.get('speakTone').value}`);
+  }
 });
 
 test('角色：下拉列出所有角色，默认角色标出来，图标与名字都显示', async () => {

@@ -12,7 +12,7 @@ const path = require('path');
 
 const { DeepSeekClient, normaliseEmotion, EMOTIONS } = require('../src/main/llm');
 const { parseCookieInput, encodeWbi, getMixinKey, parseDanmakuInfo } = require('../src/main/danmaku');
-const { Copilot, cleanReply } = require('../src/main/copilot');
+const { Copilot, cleanReply, estimateSpeechMs } = require('../src/main/copilot');
 const { appendWithRotation, DEFAULT_MAX_LOG_BYTES } = require('../src/main/logger');
 const { findMascotFolder, loadMascotImages, MASCOT_DIR_NAME, MAX_FILE_BYTES } = require('../src/main/mascot-defaults');
 const { sanitize, SettingsStore, migrateLegacyWarmup } = require('../src/main/settings');
@@ -732,12 +732,12 @@ test('老配置里的 bubbleSeconds 会自动改名成 replySeconds', () => {
 test('正常配置不会被改动', () => {
   const original = sanitize({
     api: { apiKey: 'sk-abc', temperature: 1.2 },
-    danmaku: { roomId: '1234567', minIntervalSec: 8 },
+    danmaku: { roomId: '123456789', minIntervalSec: 8 },
     persona: { botName: '小鹿' }
   });
   assert.strictEqual(original.api.apiKey, 'sk-abc');
   assert.strictEqual(original.api.temperature, 1.2);
-  assert.strictEqual(original.danmaku.roomId, '1234567');
+  assert.strictEqual(original.danmaku.roomId, '123456789');
   assert.strictEqual(original.danmaku.minIntervalSec, 8);
   assert.strictEqual(original.persona.botName, '小鹿');
 });
@@ -1663,6 +1663,15 @@ test('内置吉祥物素材：能认出子目录、跳过非图片和超大文�
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('语音超时估算：按字数算，最少 5 秒、最多 2 分钟', () => {
+  // 语音闸门的兜底：正常靠悬浮窗念完上报，这个只是"引擎卡住"时的安全阀
+  assert.strictEqual(estimateSpeechMs(''), 5000, '空文本给最小值，别让闸门瞬间放行成竞态');
+  assert.strictEqual(estimateSpeechMs('   '), 5000);
+  // 10 个字：10 × 260 + 500 + 3000 = 6100
+  assert.strictEqual(estimateSpeechMs('一二三四五六七八九十'), 6100);
+  assert.strictEqual(estimateSpeechMs('字'.repeat(2000)), 120000, '再长也封顶 2 分钟');
 });
 
 console.log(`\n结果：通过 ${passed} 项，失败 ${failed} 项`);
