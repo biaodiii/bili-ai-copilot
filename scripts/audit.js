@@ -1691,6 +1691,31 @@ function checkCompactMode() {
   else ok('设置默认关 + 面板/托盘可切 + 隐藏顶栏/对话区/抓点 + 吉祥物拖动 + 开启强制置顶');
 }
 
+/**
+ * 人设页（2026-11-16 主播要求）：角色 / 人设 / 上下文从「DeepSeek API」页拆出来单独一页。
+ * 盯三件事：侧边栏有按钮、页里有那三张卡、API 页别再留着这些控件。
+ */
+function checkPersonaTab() {
+  console.log('\n[面板] 人设页独立');
+  const problems = [];
+  const html = read('src/renderer/panel/index.html');
+  if (!html.includes('data-tab="persona"')) problems.push('侧边栏没有「人设」按钮');
+  const personaAt = html.indexOf('id="tab-persona"');
+  const apiAt = html.indexOf('id="tab-api"');
+  if (personaAt < 0) problems.push('没有 #tab-persona 区块');
+  if (apiAt < 0) problems.push('没有 #tab-api 区块');
+  if (personaAt > apiAt) problems.push('「人设」页应该在 API 页前面');
+  const personaBlock = personaAt >= 0 && apiAt > personaAt ? html.slice(personaAt, apiAt) : '';
+  const apiBlock = apiAt >= 0 ? html.slice(apiAt, html.indexOf('id="tab-speech"')) : '';
+  for (const id of ['roleSelect', 'botName', 'systemPrompt', 'styleNotes', 'contextRounds', 'memoryMinutes', 'anchorName']) {
+    if (!personaBlock.includes(`id="${id}"`)) problems.push(`人设页缺少 #${id}`);
+    if (apiBlock.includes(`id="${id}"`)) problems.push(`#${id} 还留在 API 页`);
+  }
+  if (!apiBlock.includes('id="apiKey"')) problems.push('API Key 被误搬出 API 页');
+  if (problems.length) fail(`人设页有问题：${problems.join('；')}`);
+  else ok('角色 / 人设 / 上下文单独成页，API 页只留接口与行为设置');
+}
+
 console.log('===== 静态一致性审计 =====');
 checkDomIds({ name: '控制面板', htmlFile: 'src/renderer/panel/index.html', jsFiles: ['src/renderer/panel/panel.js'] });
 checkDomIds({ name: '悬浮窗', htmlFile: 'src/renderer/overlay/index.html', jsFiles: ['src/renderer/overlay/overlay.js'] });
@@ -1714,6 +1739,7 @@ checkLogRotation();
 checkSpeechSerialization();
 checkVoiceArchive();
 checkCompactMode();
+checkPersonaTab();
 checkDanmakuSingleConnection();
 checkPendingBatch();
 checkPackaging();

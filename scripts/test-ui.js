@@ -339,7 +339,10 @@ function createDom(htmlFile) {
   const tabs = collect('button').filter((node) => String(node.className).split(/\s+/).includes('tab'));
   const panels = [...nodes.values()].filter((node) => node.id.startsWith('tab-'));
   for (const tab of tabs) {
-    tab.dataset = { tab: (tab.getAttribute && tab.getAttribute('data-tab')) || 'studio' };
+    // data-tab 在 parseHtml 里已经进了 dataset；这里只补默认值。
+    // （以前这里用 getAttribute('data-tab') 再读一次，但迷你 DOM 的 getAttribute 只认
+    //  `node[key]`，data-* 被收进了 dataset → 所有 tab 都变成 studio，点哪个都切不过去）
+    tab.dataset = { ...tab.dataset, tab: (tab.dataset && tab.dataset.tab) || 'studio' };
   }
   const chips = all.filter((node) => String(node.className).split(/\s+/).includes('chip'));
 
@@ -3205,6 +3208,39 @@ test('panel.js 能初始化并填好设置值', async () => {
   if (roomInput.value !== '123456789') throw new Error(`房间号没有回填: "${roomInput.value}"`);
   const model = dom.nodes.get('model');
   if (model.value !== 'deepseek-flash') throw new Error(`模型没有回填: "${model.value}"`);
+});
+
+test('人设页：角色 / 人设 / 上下文单独成页，API 页只留接口与行为', async () => {
+  const { dom, ready } = bootPanel();
+  await ready();
+  const personaSection = dom.nodes.get('tab-persona');
+  const apiSection = dom.nodes.get('tab-api');
+  if (!personaSection) throw new Error('没有 #tab-persona 区块');
+  if (!apiSection) throw new Error('没有 #tab-api 区块');
+  const inSection = (id, section) => {
+    let node = dom.nodes.get(id);
+    while (node) {
+      if (node === section) return true;
+      node = node.parentNode;
+    }
+    return false;
+  };
+  for (const id of ['roleSelect', 'botName', 'systemPrompt', 'contextRounds', 'anchorName']) {
+    if (!dom.nodes.get(id)) throw new Error(`缺少控件 #${id}`);
+    if (!inSection(id, personaSection)) throw new Error(`#${id} 应该在「人设」页`);
+    if (inSection(id, apiSection)) throw new Error(`#${id} 还留在「DeepSeek API」页`);
+  }
+  if (!inSection('apiKey', apiSection)) throw new Error('API Key 应该留在「DeepSeek API」页');
+  // 侧边栏点「人设」能切过去
+  const tabs = dom.document.querySelectorAll('.tab');
+  const personaTab = tabs.find((tab) => String(tab.textContent).includes('人设'));
+  if (!personaTab) {
+    throw new Error(`侧边栏没有「人设」按钮：${tabs.map((tab) => `${tab.textContent}=${tab.dataset && tab.dataset.tab}`).join(' / ')}`);
+  }
+  personaTab.dispatch('click');
+  if (!personaSection.classList.contains('active')) {
+    throw new Error(`点「人设」没有切换到该页（dataset=${JSON.stringify(personaTab.dataset)}）`);
+  }
 });
 
 test('多行文本设置（人设）能回填', async () => {

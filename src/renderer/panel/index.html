@@ -31,6 +31,7 @@
 
     <nav class="tabs">
       <button class="tab active" data-tab="studio">直播控制台</button>
+      <button class="tab" data-tab="persona">人设</button>
       <button class="tab" data-tab="api">DeepSeek API</button>
       <button class="tab" data-tab="danmaku">弹幕设置</button>
       <button class="tab" data-tab="overlay">悬浮窗</button>
@@ -108,102 +109,8 @@
         </div>
       </section>
 
-      <!-- ================= DeepSeek API ================= -->
-      <section class="panel" id="tab-api">
-        <div class="card">
-          <div class="card-head"><h2>接口配置</h2></div>
-          <div class="form">
-            <label class="field">
-              <span>API Key</span>
-              <div class="inline">
-                <input id="apiKey" type="password" placeholder="sk-xxxxxxxxxxxxxxxx" autocomplete="off" />
-                <button class="btn tiny" id="toggleKey">显示</button>
-              </div>
-              <small>在 platform.deepseek.com → API keys 里创建，只保存在本机 data/settings.json。</small>
-            </label>
-            <label class="field">
-              <span>接口地址</span>
-              <input id="baseUrl" type="text" placeholder="https://api.deepseek.com" />
-              <small>默认官方地址；用中转站的话填中转地址（结尾不用带 /v1）。</small>
-            </label>
-            <div class="grid-3">
-              <label class="field">
-                <span>模型</span>
-                <select id="model">
-                  <option value="deepseek-flash">deepseek-flash（V4.1 Flash，推荐）</option>
-                  <option value="deepseek-v4-pro">deepseek-v4-pro（更强，贵且慢）</option>
-                </select>
-                <small>用中转站的话，这里可能得填中转站自己的模型名。</small>
-              </label>
-              <label class="field">
-                <span>思考档位</span>
-                <select id="thinking">
-                  <option value="off">off（不思考，最快）</option>
-                  <option value="low">low（推荐：想一点点）</option>
-                  <option value="high">high（想得多，慢约 1.5 秒）</option>
-                  <option value="max">max（想最多，最慢）</option>
-                </select>
-                <small>思考内容也算进 max_tokens。直播建议 off 或 low。</small>
-              </label>
-              <label class="field">
-                <span>超时时间（秒）</span>
-                <input id="timeoutSec" type="number" min="5" max="300" step="1" />
-              </label>
-            </div>
-            <div class="grid-2">
-              <label class="field">
-                <span>温度 temperature：<b id="temperatureOut"></b></span>
-                <input id="temperature" type="range" min="0" max="2" step="0.05" />
-                <small>越高越活泼跳脱，建议 0.9 ~ 1.3。开思考时这项不生效（官方限制）。</small>
-              </label>
-              <label class="field">
-                <span>单次回复最大长度 max_tokens</span>
-                <input id="maxTokens" type="number" min="30" max="65536" step="50" />
-                <small>留够余量（建议 1000 以上）：思考内容也占这个额度，太小会出现空回复。</small>
-              </label>
-            </div>
-            <div class="actions">
-              <button class="btn primary" id="testLlm">测试连接</button>
-              <span class="test-result" id="llmResult"></span>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <h2>最高权限（全自动）</h2>
-            <span class="hint" id="maxPermHint">默认关着：她只提议，花钱和写库都要你点头。</span>
-          </div>
-          <div class="form">
-            <label class="mini-check">
-              <input id="maxPermissions" type="checkbox" />
-              开启最高权限：她自己联网查、自己把查到的写进知识库、自己调用软件功能、自己删条目
-            </label>
-            <div class="grid2">
-              <label class="field">
-                <span>她自己联网最多几次 / 小时</span>
-                <input type="number" id="maxSearchPerHour" min="0" max="100" step="1" />
-                <small>0 = 不限。这一项是**花钱**的，默认收紧；到顶了她会把待办攒着等你点。</small>
-              </label>
-              <label class="field">
-                <span>她自己调用软件功能最多几次 / 小时</span>
-                <input type="number" id="maxToolsPerHour" min="0" max="500" step="1" />
-                <small>0 = 不限。防她反复暂停/恢复这类钻牛角尖。</small>
-              </label>
-            </div>
-            <p class="tip" id="maxPermDetail">
-              <b>打开之后她能做</b>：自己决定要不要联网查（`[待查:]` 不再问你）；把查到的东西
-              <b>自己写进知识库</b>（每条都会留一份旧版本，在「知识库」页的「知识库改动记录」里能一键撤销）；
-              在回复里点这几个软件功能：<code>[做:暂停]</code> / <code>[做:暂停|30]</code> / <code>[做:恢复]</code> /
-              <code>[做:静音]</code> / <code>[做:取消静音]</code> / <code>[做:开个话题]</code> / <code>[做:清空对话]</code> /
-              <code>[做:导出记录]</code>；删掉确实不该留的知识（<code>[删掉:条目|为什么]</code>，删之前自动备份）。<br />
-              <b>任何档位都不给她的</b>：向直播间发弹幕/点赞/关注（这个软件对 B 站始终只读）、开始或停止弹幕监听、
-              改 API Key / 房间号。改人设走另一道门：<b>只有你在开发者模式下说</b>（<code>[开发者模式] 以后你的人设是…</code>），
-              跟这个开关无关，改之前会把旧的存一份到 <code>data\settings-history\</code>。
-            </p>
-          </div>
-        </div>
-
+      <!-- ================= 人设 ================= -->
+      <section class="panel" id="tab-persona">
         <div class="card">
           <div class="card-head">
             <h2>角色</h2>
@@ -332,6 +239,103 @@
               </div>
               <small>这是 AI 根据聊天内容自己写的一句话，下一轮对话会带上；不满意就清掉。</small>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= DeepSeek API ================= -->
+      <section class="panel" id="tab-api">
+        <div class="card">
+          <div class="card-head"><h2>接口配置</h2></div>
+          <div class="form">
+            <label class="field">
+              <span>API Key</span>
+              <div class="inline">
+                <input id="apiKey" type="password" placeholder="sk-xxxxxxxxxxxxxxxx" autocomplete="off" />
+                <button class="btn tiny" id="toggleKey">显示</button>
+              </div>
+              <small>在 platform.deepseek.com → API keys 里创建，只保存在本机 data/settings.json。</small>
+            </label>
+            <label class="field">
+              <span>接口地址</span>
+              <input id="baseUrl" type="text" placeholder="https://api.deepseek.com" />
+              <small>默认官方地址；用中转站的话填中转地址（结尾不用带 /v1）。</small>
+            </label>
+            <div class="grid-3">
+              <label class="field">
+                <span>模型</span>
+                <select id="model">
+                  <option value="deepseek-flash">deepseek-flash（V4.1 Flash，推荐）</option>
+                  <option value="deepseek-v4-pro">deepseek-v4-pro（更强，贵且慢）</option>
+                </select>
+                <small>用中转站的话，这里可能得填中转站自己的模型名。</small>
+              </label>
+              <label class="field">
+                <span>思考档位</span>
+                <select id="thinking">
+                  <option value="off">off（不思考，最快）</option>
+                  <option value="low">low（推荐：想一点点）</option>
+                  <option value="high">high（想得多，慢约 1.5 秒）</option>
+                  <option value="max">max（想最多，最慢）</option>
+                </select>
+                <small>思考内容也算进 max_tokens。直播建议 off 或 low。</small>
+              </label>
+              <label class="field">
+                <span>超时时间（秒）</span>
+                <input id="timeoutSec" type="number" min="5" max="300" step="1" />
+              </label>
+            </div>
+            <div class="grid-2">
+              <label class="field">
+                <span>温度 temperature：<b id="temperatureOut"></b></span>
+                <input id="temperature" type="range" min="0" max="2" step="0.05" />
+                <small>越高越活泼跳脱，建议 0.9 ~ 1.3。开思考时这项不生效（官方限制）。</small>
+              </label>
+              <label class="field">
+                <span>单次回复最大长度 max_tokens</span>
+                <input id="maxTokens" type="number" min="30" max="65536" step="50" />
+                <small>留够余量（建议 1000 以上）：思考内容也占这个额度，太小会出现空回复。</small>
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn primary" id="testLlm">测试连接</button>
+              <span class="test-result" id="llmResult"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>最高权限（全自动）</h2>
+            <span class="hint" id="maxPermHint">默认关着：她只提议，花钱和写库都要你点头。</span>
+          </div>
+          <div class="form">
+            <label class="mini-check">
+              <input id="maxPermissions" type="checkbox" />
+              开启最高权限：她自己联网查、自己把查到的写进知识库、自己调用软件功能、自己删条目
+            </label>
+            <div class="grid2">
+              <label class="field">
+                <span>她自己联网最多几次 / 小时</span>
+                <input type="number" id="maxSearchPerHour" min="0" max="100" step="1" />
+                <small>0 = 不限。这一项是**花钱**的，默认收紧；到顶了她会把待办攒着等你点。</small>
+              </label>
+              <label class="field">
+                <span>她自己调用软件功能最多几次 / 小时</span>
+                <input type="number" id="maxToolsPerHour" min="0" max="500" step="1" />
+                <small>0 = 不限。防她反复暂停/恢复这类钻牛角尖。</small>
+              </label>
+            </div>
+            <p class="tip" id="maxPermDetail">
+              <b>打开之后她能做</b>：自己决定要不要联网查（`[待查:]` 不再问你）；把查到的东西
+              <b>自己写进知识库</b>（每条都会留一份旧版本，在「知识库」页的「知识库改动记录」里能一键撤销）；
+              在回复里点这几个软件功能：<code>[做:暂停]</code> / <code>[做:暂停|30]</code> / <code>[做:恢复]</code> /
+              <code>[做:静音]</code> / <code>[做:取消静音]</code> / <code>[做:开个话题]</code> / <code>[做:清空对话]</code> /
+              <code>[做:导出记录]</code>；删掉确实不该留的知识（<code>[删掉:条目|为什么]</code>，删之前自动备份）。<br />
+              <b>任何档位都不给她的</b>：向直播间发弹幕/点赞/关注（这个软件对 B 站始终只读）、开始或停止弹幕监听、
+              改 API Key / 房间号。改人设走另一道门：<b>只有你在开发者模式下说</b>（<code>[开发者模式] 以后你的人设是…</code>），
+              跟这个开关无关，改之前会把旧的存一份到 <code>data\settings-history\</code>。
+            </p>
           </div>
         </div>
 
