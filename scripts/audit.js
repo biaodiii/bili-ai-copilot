@@ -1640,6 +1640,57 @@ function checkDanmakuSingleConnection() {
   else ok('start/stop 串行 + 旧连接事件守卫 + 登录重连按 uid 合并 + 事件级兜底去重，四处都在');
 }
 
+/**
+ * 无边框模式（2026-11-16 主播要的）：只留吉祥物 + 回复气泡，开启时强制置顶。
+ *
+ * 这条检查盯五个地方：
+ *   1. 设置项 `overlay.compactMode` 默认关、能被面板开关读写；
+ *   2. 悬浮窗根节点加 `compact` 类；
+ *   3. CSS 把顶栏/对话区/缩放抓点/快捷设置都藏掉，卡片背景去掉；
+ *   4. 顶栏没了以后**靠吉祥物拖动**（mascot 的 app-region）；
+ *   5. 主进程在 compact 时强制 `setAlwaysOnTop(true)`，退出后恢复原设置。
+ */
+function checkCompactMode() {
+  console.log('\n[悬浮窗] 无边框模式（只留吉祥物和回复）');
+  const problems = [];
+  const settings = read('src/main/settings.js');
+  const main = read('src/main/main.js');
+  const overlay = read('src/renderer/overlay/overlay.js');
+  const css = read('src/renderer/overlay/overlay.css');
+  const panel = read('src/renderer/panel/panel.js');
+  const html = read('src/renderer/panel/index.html');
+
+  if (!/compactMode: false/.test(settings)) problems.push('settings.js 没有 compactMode 默认值（默认关）');
+  if (!html.includes('id="compactMode"')) problems.push('面板 HTML 缺少 #compactMode 开关');
+  if (!/compactMode: \{ path: 'overlay\.compactMode', type: 'check' \}/.test(panel)) {
+    problems.push('panel.js 没把 #compactMode 绑到 overlay.compactMode');
+  }
+  if (!/function compactModeOn\(/.test(overlay)) problems.push('overlay.js 没有 compactModeOn()');
+  if (!/el\.copilot\.classList\.toggle\('compact', compact\)/.test(overlay)) {
+    problems.push('overlay.js 没有给根节点加 compact 类');
+  }
+  if (!/headerHeight = compact \? 0 : HEADER_HEIGHT/.test(overlay)) {
+    problems.push('无边框模式没把顶栏高度按 0 算（窗口会留一截空白）');
+  }
+  if (!/!compact && overlay\.chatEnabled !== false/.test(overlay)) {
+    problems.push('无边框模式没把对话区按关闭算');
+  }
+  for (const selector of ['.copilot.compact .overlay-header', '.copilot.compact .chat-panel', '.copilot.compact .resize-handle', '.copilot.compact .drawer']) {
+    if (!css.includes(selector)) problems.push(`CSS 没有隐藏 ${selector}`);
+  }
+  if (!/\.copilot\.compact \.mascot \{[\s\S]{0,160}-webkit-app-region: drag/.test(css)) {
+    problems.push('无边框模式没有用吉祥物做拖动区（顶栏没了会拖不动）');
+  }
+  if (!/compact \? true : Boolean\(overlay\.alwaysOnTop\)/.test(main)) {
+    problems.push('main.js 没在无边框模式强制置顶');
+  }
+  if (!/无边框模式（只留吉祥物和回复）/.test(main)) problems.push('托盘菜单没有无边框模式开关');
+  if (!/refreshTrayMenu\(\)/.test(main)) problems.push('设置变化后没刷新托盘勾选状态');
+
+  if (problems.length) fail(`无边框模式有问题：${problems.join('；')}`);
+  else ok('设置默认关 + 面板/托盘可切 + 隐藏顶栏/对话区/抓点 + 吉祥物拖动 + 开启强制置顶');
+}
+
 console.log('===== 静态一致性审计 =====');
 checkDomIds({ name: '控制面板', htmlFile: 'src/renderer/panel/index.html', jsFiles: ['src/renderer/panel/panel.js'] });
 checkDomIds({ name: '悬浮窗', htmlFile: 'src/renderer/overlay/index.html', jsFiles: ['src/renderer/overlay/overlay.js'] });
@@ -1662,6 +1713,7 @@ checkViewerMemory();
 checkLogRotation();
 checkSpeechSerialization();
 checkVoiceArchive();
+checkCompactMode();
 checkDanmakuSingleConnection();
 checkPendingBatch();
 checkPackaging();

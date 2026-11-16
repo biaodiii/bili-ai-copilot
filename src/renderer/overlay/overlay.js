@@ -1202,21 +1202,31 @@ function activeSizeOverride() {
   return pendingResize;
 }
 
+/** 无边框模式（2026-11-16）：只留吉祥物和回复气泡 */
+function compactModeOn() {
+  const overlay = (state.settings && state.settings.overlay) || {};
+  return overlay.compactMode === true;
+}
+
 function computeLayout() {
   const overlay = (state.settings && state.settings.overlay) || {};
+  const compact = compactModeOn();
+  // 无边框模式：顶栏/对话区都不显示，窗口只包住吉祥物 + 回复气泡
+  el.copilot.classList.toggle('compact', compact);
   // 拖动中/刚松手：尺寸以鼠标拖出来的为准（见 activeSizeOverride 的说明）
   const override = activeSizeOverride();
   const width = clamp(Number((override && override.width) || overlay.width) || 460, 220, 1400);
   // `overlay.height` 既是"内容最多长到多高"，也是"固定高度模式下就是多高"
   const heightCap = clamp(Number((override && override.height) || overlay.height) || 620, 200, 1600);
-  const fixedHeight = Boolean(override) || overlay.heightMode === 'fixed';
+  const fixedHeight = !compact && (Boolean(override) || overlay.heightMode === 'fixed');
   const mascotWidth = clamp(Number(overlay.mascotWidth) || 200, 60, width);
+  const headerHeight = compact ? 0 : HEADER_HEIGHT;
 
   el.copilot.style.fontSize = `${clamp(Number(overlay.fontScale) || 1, 0.5, 2.5) * 15}px`;
   el.copilot.style.opacity = String(clamp(Number(overlay.opacity) || 1, 0.1, 1));
   el.mascot.style.width = `${mascotWidth}px`;
 
-  const chatOn = overlay.chatEnabled !== false;
+  const chatOn = !compact && overlay.chatEnabled !== false;
   el.copilot.classList.toggle('chat-on', chatOn);
   // 设置里那个"对话区高度"（滑杆）是**期望值**，只在「跟随内容」模式里直接生效；
   // 「固定高度」模式里对话区吃剩下的空间（见下面 chatHeight 的算法）。
@@ -1230,7 +1240,7 @@ function computeLayout() {
   const chatMargin = chatOn ? 8 : 0;
   const maxReplyHeight = Math.max(
     40,
-    heightCap - HEADER_HEIGHT - mascotHeight - chatPreferred - chatMargin - bodyPadding
+    heightCap - headerHeight - mascotHeight - chatPreferred - chatMargin - bodyPadding
   );
   // 回复文本区高度 = 实际内容高度（隐藏时是 0），并且不许超过卡片能给的上限
   const rawReplyHeight = state.replyNode ? state.replyNode.offsetHeight || 0 : 0;
@@ -1245,7 +1255,7 @@ function computeLayout() {
   // 现在固定高度模式下窗口拉多高、对话区就有多高——回复区已经预留了 chatPreferred，
   // 所以 leftoverChat 永远 ≥ chatPreferred，拉高窗口的增量 100% 落到对话区。
   const leftoverChat = Math.round(
-    heightCap - HEADER_HEIGHT - bodyPadding - chatMargin - mascotHeight - replyHeight
+    heightCap - headerHeight - bodyPadding - chatMargin - mascotHeight - replyHeight
   );
   const chatHeight = chatOn
     ? fixedHeight
@@ -1255,14 +1265,14 @@ function computeLayout() {
   if (el.chatPanel) el.chatPanel.style.height = `${chatHeight}px`;
 
   const contentHeight = Math.round(
-    HEADER_HEIGHT + bodyPadding + mascotHeight + replyHeight + chatMargin + chatHeight
+    headerHeight + bodyPadding + mascotHeight + replyHeight + chatMargin + chatHeight
   );
   // 两种高度模式（见 settings.js 的 heightMode）：
   //   content = 跟着内容走（回复长了窗口变高），最高 heightCap；
   //   fixed   = 就是 heightCap，回复再长也在回复区里滚动（用户从四边拖过高度就会切到这个）。
   const height = fixedHeight
     ? Math.round(heightCap)
-    : clamp(contentHeight, HEADER_HEIGHT + 60, heightCap);
+    : clamp(contentHeight, headerHeight + 60, heightCap);
 
   state.layout = { width, height, chatHeight, mascotHeight, replyHeight };
   // 内容算出来的尺寸 → **只改大小，不动位置**：主播把窗口拖到哪就待在哪，
@@ -1685,6 +1695,8 @@ function applySettings(settings, { fromMain = false } = {}) {
   if (state.speech && state.speech.available) selectVoice();
 
   sliders.posX.value = String(Math.round((overlay.posXRatio ?? 0.76) * 100));
+  // 无边框模式没有顶栏，快捷设置抽屉也收起；要改设置用托盘菜单或控制面板
+  if (overlay.compactMode === true) toggleDrawer(false);
   sliders.posY.value = String(Math.round((overlay.posYRatio ?? 0.55) * 100));
   sliders.mascotWidth.value = String(overlay.mascotWidth ?? 200);
   sliders.fontScale.value = String(overlay.fontScale ?? 1);
@@ -1721,7 +1733,8 @@ function renderHeader() {
 /** 对话区的显示开关与高度 */
 function renderChatUi() {
   const overlay = (state.settings && state.settings.overlay) || {};
-  const chatOn = overlay.chatEnabled !== false;
+  // 无边框模式下对话区整体隐藏（连高度都不占），所以这里也要算成"关"
+  const chatOn = !compactModeOn() && overlay.chatEnabled !== false;
   el.copilot.classList.toggle('chat-on', chatOn);
   // ⚠️ 这里**不再**直接写 el.chatPanel.style.height：
   // 高度由 computeLayout() 统一算（跟随内容 = 设置值，固定高度 = 剩下的空间），

@@ -39,6 +39,49 @@ body {
   opacity: 0.9;
 }
 
+/* ---------------- 无边框模式（2026-11-16）：只剩吉祥物 + 回复气泡 ---------------- */
+/* 卡片背景/描边/阴影全部去掉，窗口里只看得见吉祥物和回复；
+   顶栏、对话区、缩放抓点、快捷设置都藏起来。退出靠托盘菜单或控制面板。 */
+.copilot.compact {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.copilot.compact .overlay-header,
+.copilot.compact .chat-panel,
+.copilot.compact .resize-handle,
+.copilot.compact .drawer {
+  display: none !important;
+}
+
+.copilot.compact .overlay-body {
+  padding: 2px 4px 6px;
+}
+
+/* 顶栏没了，按住吉祥物拖动窗口（.mascot 原本是 pointer-events:none，这里要放开） */
+.copilot.compact .mascot {
+  pointer-events: auto;
+  -webkit-app-region: drag;
+  cursor: grab;
+}
+
+.copilot.compact .mascot:active {
+  cursor: grabbing;
+}
+
+.copilot.compact .mascot-img {
+  -webkit-user-drag: none;
+}
+
+/* 回复气泡保持原样，但不抢拖动 */
+.copilot.compact .reply-box {
+  pointer-events: none;
+}
+
 /* ---------------- 顶部拖动栏 ---------------- */
 
 .overlay-header {

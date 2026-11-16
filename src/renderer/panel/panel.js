@@ -350,6 +350,8 @@ function bindAll() {
     opacity: { path: 'overlay.opacity', type: 'range', out: 'opacityOut', fmt: (v) => `${Math.round(v * 100)}%` },
     replySeconds: { path: 'overlay.replySeconds', type: 'range', out: 'replySecondsOut', fmt: (v) => `${v}s` },
     alwaysOnTop: { path: 'overlay.alwaysOnTop', type: 'check' },
+    // 无边框模式（2026-11-16）：只留吉祥物和回复，开启时强制置顶
+    compactMode: { path: 'overlay.compactMode', type: 'check' },
     // 锁定窗口位置（2026-10-19 加的）：和悬浮窗顶栏那个 🔒 按钮是**同一个配置**
     locked: { path: 'overlay.locked', type: 'check' },
     showViewerMessage: { path: 'overlay.showViewerMessage', type: 'check' },

@@ -2624,6 +2624,19 @@ test('语音朗读：静音会清空还没念的排队', async () => {
 
 // ---------------------------------------------------------------- 悬浮窗对话区
 
+test('无边框模式：只留吉祥物和回复，窗口高度收紧、对话区不占位', async () => {
+  const { dom, api, ready } = bootOverlay({ overlay: { compactMode: true, chatEnabled: true } });
+  await ready();
+  const copilot = dom.nodes.get('copilot');
+  const classes = String(copilot.className).split(/\s+/);
+  if (!classes.includes('compact')) throw new Error(`根节点应加 compact 类：${copilot.className}`);
+  if (classes.includes('chat-on')) throw new Error('无边框模式不应显示对话区');
+  const bounds = api._calls.filter((call) => call.name === 'window.setBounds').pop();
+  const height = bounds && bounds.args[0] && bounds.args[0].height;
+  if (!height) throw new Error('没有上报窗口尺寸');
+  if (height > 420) throw new Error(`无边框模式窗口应更矮，实际 ${height}`);
+});
+
 test('对话区默认显示，并给出空状态提示', async () => {
   const { dom, ready } = bootOverlay();
   await ready();
@@ -3374,6 +3387,22 @@ test('登录后账号卡片显示昵称', async () => {
   if (name !== '测试观众') throw new Error(`账号名显示不正确: ${name}`);
   const sub = dom.nodes.get('accountSub').textContent;
   if (!sub.includes('100000001')) throw new Error(`uid 没有显示: ${sub}`);
+});
+
+test('无边框模式：面板开关会写进设置', async () => {
+  const { dom, api, timers, ready } = bootPanel();
+  await ready();
+  const box = dom.nodes.get('compactMode');
+  if (!box) throw new Error('面板缺少 #compactMode 开关');
+  api._calls.length = 0;
+  box.checked = true;
+  box.dispatch('change');
+  timers.flush(); // 设置保存有防抖
+  await drain(6);
+  const saved = api._calls.filter((call) => call.name === 'settings.update').pop();
+  if (!saved || !saved.args[0] || !saved.args[0].overlay || saved.args[0].overlay.compactMode !== true) {
+    throw new Error(`开关应该写入 overlay.compactMode：${JSON.stringify(saved && saved.args)}`);
+  }
 });
 
 test('修改输入框会触发设置保存（带防抖）', async () => {

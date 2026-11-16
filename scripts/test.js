@@ -682,6 +682,7 @@ test('字段类型不对时回退默认值', () => {
   assert.strictEqual(cleaned.danmaku.maxBatch, 8);
   assert.strictEqual(cleaned.overlay.width, 460);
   assert.strictEqual(cleaned.overlay.clickThrough, true);
+  assert.strictEqual(cleaned.overlay.compactMode, false);
 });
 
 test('整个段落类型错了也不会崩', () => {

@@ -508,6 +508,27 @@ function readLog() {
     assert(call.value.endsWith('data'), `userData 应指向 data 目录，实际 ${call.value}`);
   });
 
+  await test('无边框模式：强制置顶，退出后恢复原来的置顶设置', async () => {
+    const { record, electron } = await boot({ autoShow: true });
+    const overlay = record.windows.find((w) => String(w.options.title).includes('悬浮窗'));
+    assert(overlay, '没有悬浮窗');
+    const update = electron._ipcHandlers.get('settings:update');
+    overlay.alwaysOnTop.length = 0;
+    // 用户本来是「不置顶」，但开无边框模式 → 必须强制置顶
+    await update(null, { overlay: { compactMode: true, alwaysOnTop: false } });
+    assert(overlay.alwaysOnTop.length > 0, '无边框模式没有重新应用置顶');
+    assert(
+      overlay.alwaysOnTop[overlay.alwaysOnTop.length - 1].value === true,
+      `无边框模式应强制置顶：${JSON.stringify(overlay.alwaysOnTop)}`
+    );
+    // 退出无边框 → 回到用户原来的 false
+    await update(null, { overlay: { compactMode: false } });
+    assert(
+      overlay.alwaysOnTop[overlay.alwaysOnTop.length - 1].value === false,
+      `退出无边框应恢复原置顶设置：${JSON.stringify(overlay.alwaysOnTop)}`
+    );
+  });
+
   await test('悬浮窗按设置应用了置顶 / 穿透 / 全工作区可见', async () => {
     const { record } = await boot({ autoShow: true });
     const overlay = record.windows.find((w) => String(w.options.title).includes('悬浮窗'));
@@ -2534,10 +2555,18 @@ function readLog() {
         'utf8'
       );
     }
+    // 知识库先有一条真实条目：这条用例要验证「清空待审不动知识库」，
+    // 不能依赖运行环境里本来就有的笔记（干净副本里 `知识库/` 是空的）
+    await electron._ipcHandlers.get('knowledge:add')(null, {
+      title: '清空待审的底稿',
+      content: '清空待审只删 pending，不能动 notes。',
+      tags: '',
+      source: '测试'
+    });
     const mid = await listHandler();
     assert(mid.pending.length >= 2, `准备的两条草稿要能读到：${mid.pending.length}`);
     const countBefore = mid.stats.count;
-    assert(countBefore > 0, '这个用例需要库里本来就有知识（否则"没动"没法验）');
+    assert(countBefore > 0, '这个用例需要库里有知识（此处已自己造一条，不应失败）');
 
     const clear = electron._ipcHandlers.get('knowledge:clearPending');
     assert(clear, '没有注册 knowledge:clearPending');

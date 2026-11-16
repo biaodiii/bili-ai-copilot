@@ -115,6 +115,10 @@ function defaultSettings() {
       opacity: 1,
       clickThrough: true,
       alwaysOnTop: true,
+      // 无边框模式（2026-11-16 主播要的）：只显示吉祥物和回复气泡，
+      // 隐藏顶栏 / 对话区 / 缩放抓点；开启时强制置顶（见 main.js applyOverlayConfig），
+      // 退出后恢复上面那个 alwaysOnTop 的设置。面板和托盘菜单都能一键切。
+      compactMode: false,
       // 锁定窗口位置（2026-10-19 加的；悬浮窗顶栏有个 🔒 按钮切它）：
       // 锁定后顶栏不能再拖动悬浮窗（系统拖动区被关掉），双击也不复位——防止直播中手滑拖歪。
       // **不影响**窗口里的按钮：否则锁上就解不开了。

@@ -1542,7 +1542,10 @@ function createOverlayWindow() {
 
 function applyOverlayConfig(overlay) {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  overlayWindow.setAlwaysOnTop(Boolean(overlay.alwaysOnTop), 'screen-saver');
+  // 无边框模式（2026-11-16）强制置顶：只剩吉祥物和回复时，主播不希望它被别的窗口盖住；
+  // 退出该模式后回到用户自己设置的 alwaysOnTop。
+  const compact = Boolean(overlay.compactMode);
+  overlayWindow.setAlwaysOnTop(compact ? true : Boolean(overlay.alwaysOnTop), 'screen-saver');
   if (typeof overlayWindow.setContentProtection === 'function') {
     overlayWindow.setContentProtection(Boolean(overlay.hideInScreenshot));
   }
@@ -1550,6 +1553,8 @@ function applyOverlayConfig(overlay) {
   // 所以恒定为可交互——否则会出现按钮点不动的情况。
   setOverlayIgnoreMouse(false);
   send(overlayWindow, 'overlay:config', overlay);
+  // 托盘里的「无边框模式」勾选状态要跟着面板/设置变化刷新
+  refreshTrayMenu();
 }
 
 let ignoreMouseState = null;
@@ -1646,31 +1651,58 @@ function quitApp() {
   app.quit();
 }
 
+/**
+ * 托盘菜单（2026-11-16 抽出成函数：加「无边框模式」勾选项，且状态要跟着设置刷新）。
+ * 每次设置变化都会重建一遍（见 applyOverlayConfig 里的 refreshTrayMenu）。
+ */
+function buildTrayMenu() {
+  const compact = Boolean(((store.get() || {}).overlay || {}).compactMode);
+  return Menu.buildFromTemplate([
+    { label: '打开控制面板', click: () => createPanelWindow() },
+    { label: '显示/隐藏悬浮窗', click: () => toggleOverlay() },
+    {
+      label: '无边框模式（只留吉祥物和回复）',
+      type: 'checkbox',
+      checked: compact,
+      click: (item) => {
+        // 走统一的设置入口：会落盘、广播、并触发 applyOverlayConfig（强制置顶）
+        applySettingsPatch({ overlay: { compactMode: Boolean(item.checked) } });
+      }
+    },
+    { type: 'separator' },
+    {
+      label: '开始监听弹幕',
+      click: () => copilot.startDanmaku().catch(() => {})
+    },
+    {
+      label: '停止监听弹幕',
+      click: () => copilot.stopDanmaku().catch(() => {})
+    },
+    { type: 'separator' },
+    {
+      label: '退出程序',
+      click: () => quitApp()
+    }
+  ]);
+}
+
+/** 设置变了就重建托盘菜单，保证「无边框模式」的勾选状态是当前值 */
+function refreshTrayMenu() {
+  // 测试里的假 Tray 只有 setContextMenu，没有 isDestroyed；别因为一个可选方法把整个启动搞崩
+  if (!tray || (typeof tray.isDestroyed === 'function' && tray.isDestroyed())) return;
+  try {
+    tray.setContextMenu(buildTrayMenu());
+  } catch (_) {
+    /* 托盘重建失败不影响功能 */
+  }
+}
+
 function createTray() {
   try {
     const icon = buildTrayIcon();
     tray = new Tray(icon);
     tray.setToolTip('直播 AI 搭档');
-    tray.setContextMenu(
-      Menu.buildFromTemplate([
-        { label: '打开控制面板', click: () => createPanelWindow() },
-        { label: '显示/隐藏悬浮窗', click: () => toggleOverlay() },
-        { type: 'separator' },
-        {
-          label: '开始监听弹幕',
-          click: () => copilot.startDanmaku().catch(() => {})
-        },
-        {
-          label: '停止监听弹幕',
-          click: () => copilot.stopDanmaku().catch(() => {})
-        },
-        { type: 'separator' },
-        {
-          label: '退出程序',
-          click: () => quitApp()
-        }
-      ])
-    );
+    tray.setContextMenu(buildTrayMenu());
     tray.on('double-click', () => createPanelWindow());
   } catch (error) {
     logger.warn(`托盘创建失败（不影响使用）: ${error.message}`);
