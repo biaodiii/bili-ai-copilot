@@ -1277,8 +1277,9 @@ function computeLayout() {
   state.layout = { width, height, chatHeight, mascotHeight, replyHeight };
   // 内容算出来的尺寸 → **只改大小，不动位置**：主播把窗口拖到哪就待在哪，
   // 不能因为来了一条回复就把它拽回屏幕里（2026-10-19 修的这个 bug）。
+  // 无边框模式例外：窗口要向上长、底边钉住（吉祥物在底部，不能被回复挤下去）。
   // 拖动中则连尺寸都别改（否则和鼠标抢，见 activeSizeOverride）。
-  if (!override) applyWindowBounds({ position: 'keep', clamp: 'visible' });
+  if (!override) applyWindowBounds({ position: 'keep', clamp: 'visible', anchorBottom: compact });
   return state.layout;
 }
 /** 窗口当前的真实位置（屏幕坐标）；拿不到就返回 null */
@@ -1321,7 +1322,7 @@ function syncWindowBoundsPosition() {
  *   `clamp: 'visible'` 只保证至少留 48px 在屏幕内，允许大半在屏幕外；
  *   `clamp: 'inside'`  完整夹进屏幕（首次定位和重置用，免得把窗口丢到看不见的地方）。
  */
-function applyWindowBounds({ anchorTop = true, position = 'set', clamp: clampMode = 'inside' } = {}) {
+function applyWindowBounds({ anchorTop = true, anchorBottom = false, position = 'set', clamp: clampMode = 'inside' } = {}) {
   if (!window.api || !window.api.window || !window.api.window.setBounds) return;
   // 拖动缩放期间窗口尺寸归鼠标管：这里要是也调 setBounds，就会和鼠标抢 →
   // 「原尺寸 / 拉动尺寸」来回闪（resize 事件 → 布局 → 改回旧尺寸 → 又 resize）。
@@ -1365,6 +1366,8 @@ function applyWindowBounds({ anchorTop = true, position = 'set', clamp: clampMod
     width,
     height,
     anchorTop,
+    // 无边框模式：让主进程把窗口底边钉住（回复出现时向上长，吉祥物不位移）
+    anchorBottom,
     position: effectivePosition,
     clamp: effectiveClamp,
     screenWidth,

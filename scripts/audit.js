@@ -1684,6 +1684,12 @@ function checkCompactMode() {
   if (!/compact \? true : Boolean\(overlay\.alwaysOnTop\)/.test(main)) {
     problems.push('main.js 没在无边框模式强制置顶');
   }
+  if (!/anchorBottom = bounds\.anchorBottom === true/.test(main) || !/y = current\.y \+ current\.height - height/.test(main)) {
+    problems.push('main.js 没有「底边固定」的窗口定位（回复出现会把吉祥物挤下去）');
+  }
+  if (!/anchorBottom: compact/.test(overlay) || !/anchorBottom,/.test(overlay)) {
+    problems.push('overlay.js 没把 anchorBottom 传进窗口尺寸（无边框模式吉祥物会位移）');
+  }
   if (!/无边框模式（只留吉祥物和回复）/.test(main)) problems.push('托盘菜单没有无边框模式开关');
   if (!/refreshTrayMenu\(\)/.test(main)) problems.push('设置变化后没刷新托盘勾选状态');
 

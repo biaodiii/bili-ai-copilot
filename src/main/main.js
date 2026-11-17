@@ -3388,6 +3388,9 @@ function registerIpc() {
     const height = Math.max(140, Math.min(1800, Math.round(Number(bounds.height) || 620)));
     const keepPosition = bounds.position === 'keep';
     const visibleOnly = bounds.clamp === 'visible';
+    // 无边框模式（2026-11-17）：回复出现/变长时窗口要**向上长**，底边（吉祥物）不能动，
+    // 否则吉祥物会被往下挤。anchorBottom 只对「只改大小」的自动布局生效。
+    const anchorBottom = bounds.anchorBottom === true;
     const current = overlayWindow.getBounds();
 
     let x;
@@ -3396,6 +3399,7 @@ function registerIpc() {
       // 自动布局：位置完全不动。窗口可能本来就有一半在屏幕外，那是主播自己摆的，不归我们管。
       x = current.x;
       y = current.y;
+      if (anchorBottom) y = current.y + current.height - height;
     } else {
       x = Math.round(Number(bounds.x) || 0);
       y = Math.round(Number(bounds.y) || 0);

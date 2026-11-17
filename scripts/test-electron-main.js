@@ -529,6 +529,25 @@ function readLog() {
     );
   });
 
+  await test('无边框模式：回复变高时窗口向上长，底边（吉祥物）不动', async () => {
+    const { record, electron } = await boot({ autoShow: true });
+    const overlay = record.windows.find((w) => String(w.options.title).includes('悬浮窗'));
+    assert(overlay, '没有悬浮窗');
+    const setBounds = electron._ipcHandlers.get('window:setBounds');
+    // 模拟窗口现在在 y=500、高 300（吉祥物贴着底边）
+    overlay.bounds = { x: 100, y: 500, width: 400, height: 300 };
+    await setBounds(null, { position: 'keep', clamp: 'visible', width: 400, height: 440, anchorBottom: true });
+    assert(overlay.bounds.height === 440, `高度没改：${JSON.stringify(overlay.bounds)}`);
+    assert(
+      overlay.bounds.y === 360,
+      `底边应固定（500+300-440=360），实际 y=${overlay.bounds.y}`
+    );
+    // 普通模式（不带 anchorBottom）保持老行为：顶边不动
+    overlay.bounds = { x: 100, y: 500, width: 400, height: 300 };
+    await setBounds(null, { position: 'keep', clamp: 'visible', width: 400, height: 440 });
+    assert(overlay.bounds.y === 500, `普通模式应保持顶边，实际 y=${overlay.bounds.y}`);
+  });
+
   await test('悬浮窗按设置应用了置顶 / 穿透 / 全工作区可见', async () => {
     const { record } = await boot({ autoShow: true });
     const overlay = record.windows.find((w) => String(w.options.title).includes('悬浮窗'));

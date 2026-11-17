@@ -2638,6 +2638,13 @@ test('无边框模式：只留吉祥物和回复，窗口高度收紧、对话�
   const height = bounds && bounds.args[0] && bounds.args[0].height;
   if (!height) throw new Error('没有上报窗口尺寸');
   if (height > 420) throw new Error(`无边框模式窗口应更矮，实际 ${height}`);
+  // 吉祥物在底部：窗口变高时必须钉住底边，否则回复出现会把吉祥物挤下去
+  if (!bounds.args[0].anchorBottom) throw new Error('无边框模式的窗口尺寸应带 anchorBottom（底边固定）');
+  // 再来一条回复，仍然要带 anchorBottom
+  api.emit('reply', { id: 'r-compact', ts: Date.now(), text: '回复来了', emotion: 'happy', source: 'danmaku' });
+  await ready();
+  const after = api._calls.filter((call) => call.name === 'window.setBounds').pop();
+  if (!after.args[0].anchorBottom) throw new Error('回复出现后的布局丢了 anchorBottom');
 });
 
 test('对话区默认显示，并给出空状态提示', async () => {
