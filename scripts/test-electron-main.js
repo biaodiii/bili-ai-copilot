@@ -904,6 +904,24 @@ function readLog() {
     );
   });
 
+  await test('回复只广播一次：主播的话得到的回复不会在面板里显示两遍', async () => {
+    const { exported, record } = await boot({ autoShow: true });
+    const overlay = record.windows.find((w) => String(w.options.title).includes('悬浮窗'));
+    assert(overlay, '没有悬浮窗');
+    record.sent.length = 0;
+    exported.copilot.emit('reply', {
+      id: 'r-operator-once',
+      ts: Date.now(),
+      text: '只应该出现一次',
+      emotion: 'happy',
+      source: 'operator'
+    });
+    const replies = record.sent.filter((item) => item.channel === 'ai:reply');
+    // broadcast 会各发一次给面板和悬浮窗；以前 operator 回复在 broadcast 之后又补发一次 panel，
+    // 面板里就会出现完全相同（时间/耗时/token 都一样）的两张卡。
+    assert(replies.length === 2, `面板 + 悬浮窗应各一次，实际 ${replies.length} 次：${JSON.stringify(replies.map((r) => r.id))}`);
+  });
+
   await test('弹幕事件会被转发到控制面板', async () => {
     const { record, electron } = await boot({ autoShow: true });
     const copilot = electron._ipcHandlers.get('copilot:status');

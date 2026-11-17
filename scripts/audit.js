@@ -191,6 +191,12 @@ function checkIpc() {
     ok(`${subscribed.size} 个订阅事件都有对应的发送方`);
   }
 
+  // 回复只能广播一次（2026-11-17 修）：broadcast 已经同时发面板和悬浮窗，
+  // 不能再按 source 补 send(panelWindow, 'ai:reply')，否则面板出现两张一模一样的卡。
+  if (/broadcast\('ai:reply'/.test(mainExpanded) && /send\(\s*[A-Za-z0-9_.]+,\s*'ai:reply'/.test(mainExpanded)) {
+    fail("ai:reply 既 broadcast 又单独 send：回复会在面板里重复显示（删掉多余那次）");
+  }
+
   const unusedHandlers = [...handled].filter((channel) => !invoked.has(channel) && channel !== 'mascot:pickImages');
   if (unusedHandlers.length) {
     console.log(`  · 提示：这些主进程处理器暂时没有渲染层调用（可能是预留）：${unusedHandlers.join(', ')}`);

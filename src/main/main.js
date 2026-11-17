@@ -1883,8 +1883,11 @@ function wireEvents() {
   copilot.on('filtered', (payload) => send(panelWindow, 'danmaku:filtered', payload));
   // 礼物 / 上舰 / 进场那条 `live-event` 通道 2026-10-21 一并删了（连同解析一起，见 danmaku.js）。
   copilot.on('reply', (reply) => {
+    // ⚠️ 只发一次（2026-11-17 修）：broadcast 已经同时发给面板和悬浮窗，
+    // 以前这里又对 `reply.source === 'operator'` 补发了一次 send(panelWindow, …)，
+    // 结果主播自己说的话得到的回复会在面板里显示两遍（时间/耗时/token 完全一样的重复卡片），
+    // 悬浮窗也会收到两次 → 语音队列念两遍。别再按 source 补发。
     broadcast('ai:reply', reply);
-    if (reply.source === 'operator') send(panelWindow, 'ai:reply', reply);
     // 语音开着就等它念完再处理下一批弹幕（只拦弹幕队列，见 holdForSpeechIfNeeded）
     holdForSpeechIfNeeded(reply);
   });
